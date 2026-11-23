@@ -12,6 +12,7 @@ import java.nio.FloatBuffer;
 
 public class SaveableFramebuffer implements AutoCloseable {
     public @Nullable FloatBuffer audioBuffer;
+    public double replayTick = 0.0;
     private ImageFrame downloaded = null;
     private final int width;
     private final int height;

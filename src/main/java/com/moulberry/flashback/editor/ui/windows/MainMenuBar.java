@@ -7,6 +7,7 @@ import com.moulberry.flashback.screen.select_replay.SelectReplayScreen;
 import imgui.moulberry90.ImGui;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.TitleScreen;
+import net.minecraft.client.gui.screens.packs.PackSelectionScreen;
 import net.minecraft.client.resources.language.I18n;
 import net.minecraft.network.chat.Component;
 
@@ -37,6 +38,13 @@ public class MainMenuBar {
             }
             if (ImGui.menuItem(I18n.get("flashback.export_screenshot") + "##ExportScreenshot")) {
                 ExportScreenshotWindow.open();
+            }
+            if (ImGui.menuItem(I18n.get("resourcePack.title") + "##ResourcePacks")) {
+                Minecraft minecraft = Minecraft.getInstance();
+                minecraft.gui.setScreen(new PackSelectionScreen(minecraft.getResourcePackRepository(), repository -> {
+                    minecraft.options.updateResourcePacks(repository);
+                    minecraft.gui.setScreen(null);
+                }, minecraft.getResourcePackDirectory(), Component.translatable("resourcePack.title")));
             }
             ImGui.separator();
             if (ImGui.menuItem(I18n.get("flashback.select_replay.open") + "##Open")) {

@@ -1,6 +1,7 @@
 package com.moulberry.flashback.mixin.compat;
 
 import com.mojang.blaze3d.vertex.PoseStack;
+import com.moulberry.flashback.IrisShaderCompatibility;
 import com.moulberry.flashback.state.EditorState;
 import com.moulberry.flashback.state.EditorStateManager;
 import com.moulberry.mixinconstraints.annotations.IfModLoaded;
@@ -23,6 +24,9 @@ public class MixinSodiumWorldRenderer {
 
     @Inject(method = "renderBlockEntities", at = @At("HEAD"), cancellable = true, require = 0, remap = false)
     public void renderBlockEntities(CallbackInfo ci) {
+        if (!IrisShaderCompatibility.shouldAllowVisualOverrides("Sodium block entity render filter")) {
+            return;
+        }
         EditorState editorState = EditorStateManager.getCurrent();
         if (editorState != null && !editorState.replayVisuals.renderBlocks) {
             ci.cancel();

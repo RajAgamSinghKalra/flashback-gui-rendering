@@ -1,5 +1,7 @@
 package com.moulberry.flashback.mixin;
 
+import com.moulberry.flashback.visuals.ShaderManager;
+import java.util.Optional;
 import com.llamalad7.mixinextras.injector.v2.WrapWithCondition;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
@@ -17,14 +19,15 @@ import com.mojang.renderpearl.api.textures.GpuSampler;
 import com.mojang.renderpearl.api.textures.GpuTexture;
 import com.mojang.renderpearl.api.textures.GpuTextureView;
 import com.moulberry.flashback.Flashback;
+import com.moulberry.flashback.IrisShaderCompatibility;
 import com.moulberry.flashback.combo_options.ExportProjection;
 import com.moulberry.flashback.exporting.ExportJob;
 import com.moulberry.flashback.playback.ReplayServer;
 import com.moulberry.flashback.state.EditorState;
 import com.moulberry.flashback.state.EditorStateManager;
 import com.moulberry.flashback.editor.ui.ReplayUI;
+import com.moulberry.flashback.visuals.RecordedCameraRenderState;
 import com.moulberry.flashback.visuals.ReplayVisuals;
-import com.moulberry.flashback.visuals.ShaderManager;
 import it.unimi.dsi.fastutil.objects.ObjectArrayList;
 import net.minecraft.client.Camera;
 import net.minecraft.client.CloudStatus;
@@ -32,9 +35,9 @@ import net.minecraft.client.DeltaTracker;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.particle.ParticleEngine;
 import net.minecraft.client.renderer.*;
-import net.minecraft.client.renderer.chunk.ChunkSectionLayerGroup;
-import net.minecraft.client.renderer.chunk.ChunkSectionsToRender;
 import net.minecraft.client.renderer.chunk.SectionRenderDispatcher;
+import net.minecraft.client.renderer.chunk.ChunkSectionsToRender;
+import net.minecraft.client.renderer.chunk.ChunkSectionLayerGroup;
 import net.minecraft.client.renderer.culling.Frustum;
 import net.minecraft.client.renderer.entity.EntityRenderDispatcher;
 import net.minecraft.client.renderer.entity.state.AvatarRenderState;
@@ -59,7 +62,6 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
-import java.util.Optional;
 import java.util.OptionalInt;
 
 @Mixin(value = LevelRenderer.class, priority = 1100)
@@ -81,6 +83,10 @@ public abstract class MixinLevelRenderer {
     public void renderLevel(CallbackInfo ci, @Local(argsOnly = true) Vector4f fogColor, @Local(argsOnly = true) CameraRenderState cameraState) {
         ReplayUI.lastProjectionMatrix = new Matrix4f(cameraState.projectionMatrix);
         ReplayUI.lastViewQuaternion = new Quaternionf(cameraState.orientation);
+
+        if (!IrisShaderCompatibility.shouldAllowVisualOverrides("LevelRenderer fog/sky color overrides")) {
+            return;
+        }
 
         EditorState editorState = EditorStateManager.getCurrent();
         if (editorState != null) {
@@ -167,6 +173,9 @@ public abstract class MixinLevelRenderer {
 
     @Inject(method = "submitBlockEntities", at = @At("HEAD"), cancellable = true)
     public void renderBlockEntities(CallbackInfo ci) {
+        if (!IrisShaderCompatibility.shouldAllowVisualOverrides("block entity render filter")) {
+            return;
+        }
         EditorState editorState = EditorStateManager.getCurrent();
         if (editorState != null && !editorState.replayVisuals.renderBlocks) {
             ci.cancel();
@@ -176,6 +185,12 @@ public abstract class MixinLevelRenderer {
     @WrapWithCondition(method = "submitEntities", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/renderer/entity/EntityRenderDispatcher;submit(Lnet/minecraft/client/renderer/entity/state/EntityRenderState;Lnet/minecraft/client/renderer/state/level/CameraRenderState;DDDLcom/mojang/blaze3d/vertex/PoseStack;Lnet/minecraft/client/renderer/SubmitNodeCollector;)V"))
     public boolean renderEntity(EntityRenderDispatcher instance, EntityRenderState entityRenderState, CameraRenderState cameraRenderState,
                                 double d, double e, double f, PoseStack poseStack, SubmitNodeCollector submitNodeCollector) {
+        if (!RecordedCameraRenderState.shouldSubmitEntityRenderState(entityRenderState)) {
+            return false;
+        }
+        if (!IrisShaderCompatibility.shouldAllowVisualOverrides("entity render filter")) {
+            return true;
+        }
         EditorState editorState = EditorStateManager.getCurrent();
         if (entityRenderState instanceof AvatarRenderState) {
             return editorState == null || editorState.replayVisuals.renderPlayers;
@@ -186,12 +201,15 @@ public abstract class MixinLevelRenderer {
 
     @Inject(method = "addSkyPass", at = @At("HEAD"), cancellable = true)
     public void addSkyPass(CallbackInfo ci) {
+        if (!IrisShaderCompatibility.shouldAllowWorldRenderingMutations("sky pass cancellation")) {
+            return;
+        }
         EditorState editorState = EditorStateManager.getCurrent();
         if (editorState != null && !editorState.replayVisuals.renderSky) {
             ci.cancel();
         }
         ExportJob exportJob = Flashback.EXPORT_JOB;
-        if (exportJob != null && exportJob.getSettings().projection() == ExportProjection.ORTHOGRAPHIC) {
+        if (exportJob != null && exportJob.getEffectiveProjection() == ExportProjection.ORTHOGRAPHIC) {
             ci.cancel();
         }
     }

@@ -10,6 +10,7 @@ import com.moulberry.flashback.playback.ReplayChunkCache;
 import com.moulberry.flashback.record.FlashbackChunkMeta;
 import com.moulberry.flashback.record.FlashbackMeta;
 import com.moulberry.flashback.record.ReplayMarker;
+import com.moulberry.flashback.ui.UiOverlayManifest;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import it.unimi.dsi.fastutil.ints.Int2IntMap;
@@ -35,8 +36,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.zip.Deflater;
 import java.util.zip.ZipEntry;
@@ -76,12 +79,18 @@ public class ReplayCombiner {
                 throw new RuntimeException("Replays were created on different versions of the game, unable to combine");
             }
 
+            int firstReplayDuration = firstMetadata.totalTicks;
+            UiOverlayManifest firstUiOverlay = readUiOverlayManifest(firstFileSystem, firstMetadata);
+            UiOverlayManifest secondUiOverlay = readUiOverlayManifest(secondFileSystem, secondMetadata);
+            UiOverlayManifest combinedUiOverlay = combineUiOverlayManifests(firstUiOverlay, secondUiOverlay, firstReplayDuration);
+
             firstMetadata.replayIdentifier = UUID.randomUUID();
             firstMetadata.name = replayName;
             for (Map.Entry<Integer, ReplayMarker> entry : secondMetadata.replayMarkers.entrySet()) {
                 firstMetadata.replayMarkers.put(entry.getKey() + firstMetadata.totalTicks, entry.getValue());
             }
             firstMetadata.totalTicks = firstMetadata.totalTicks + secondMetadata.totalTicks;
+            firstMetadata.uiOverlay = combinedUiOverlay == null ? null : combinedUiOverlay.toMetadata();
 
             record ReplayChunk(Path path, Int2IntMap levelChunkMappings) {}
             Map<String, ReplayChunk> newReplayChunks = new HashMap<>();
@@ -165,6 +174,8 @@ public class ReplayCombiner {
             zipOut.putNextEntry(zipEntry);
             Files.copy(firstFileSystem.getPath("/icon.png"), zipOut);
             zipOut.closeEntry();
+
+            writeUiOverlay(zipOut, combinedUiOverlay, firstFileSystem, firstUiOverlay, secondFileSystem, secondUiOverlay);
 
             // Write chunks
             for (Map.Entry<String, ReplayChunk> entry : newReplayChunks.entrySet()) {
@@ -263,6 +274,103 @@ public class ReplayCombiner {
             bos.close();
             fos.close();
         }
+    }
+
+    private static @org.jetbrains.annotations.Nullable UiOverlayManifest readUiOverlayManifest(FileSystem fileSystem, FlashbackMeta metadata) throws IOException {
+        if (metadata.uiOverlay == null) {
+            return null;
+        }
+
+        Path manifestPath = fileSystem.getPath("/" + metadata.uiOverlay.manifest);
+        if (!Files.exists(manifestPath)) {
+            Flashback.LOGGER.warn("Replay metadata references UI overlay, but {} is missing", manifestPath);
+            return null;
+        }
+
+        JsonObject json = FlashbackGson.COMPRESSED.fromJson(Files.readString(manifestPath), JsonObject.class);
+        UiOverlayManifest manifest = UiOverlayManifest.fromJson(json);
+        if (manifest == null || (manifest.samples.isEmpty() && manifest.cursorSamples.isEmpty())) {
+            Flashback.LOGGER.warn("Replay UI overlay manifest is invalid or empty: {}", manifestPath);
+            return null;
+        }
+
+        return manifest;
+    }
+
+    private static @org.jetbrains.annotations.Nullable UiOverlayManifest combineUiOverlayManifests(
+        @org.jetbrains.annotations.Nullable UiOverlayManifest first,
+        @org.jetbrains.annotations.Nullable UiOverlayManifest second,
+        int secondTickOffset
+    ) {
+        if (first == null && second == null) {
+            return null;
+        }
+
+        UiOverlayManifest combined = new UiOverlayManifest();
+        if (first != null) {
+            combined.append(first.copyWithTickOffset(0));
+        }
+        if (second != null) {
+            combined.append(second.copyWithTickOffset(secondTickOffset));
+        }
+        return combined.samples.isEmpty() && combined.cursorSamples.isEmpty() ? null : combined;
+    }
+
+    private static void writeUiOverlay(ZipOutputStream zipOut, @org.jetbrains.annotations.Nullable UiOverlayManifest combined,
+                                       FileSystem firstFileSystem, @org.jetbrains.annotations.Nullable UiOverlayManifest first,
+                                       FileSystem secondFileSystem, @org.jetbrains.annotations.Nullable UiOverlayManifest second) throws IOException {
+        if (combined == null) {
+            return;
+        }
+
+        ZipEntry zipEntry = new ZipEntry(UiOverlayManifest.MANIFEST_ENTRY);
+        zipOut.putNextEntry(zipEntry);
+        zipOut.write(FlashbackGson.COMPRESSED.toJson(combined.toJson()).getBytes(StandardCharsets.UTF_8));
+        zipOut.closeEntry();
+
+        Set<String> copiedAssets = new HashSet<>();
+        copyUiOverlayAssets(zipOut, firstFileSystem, first, copiedAssets);
+        copyUiOverlayAssets(zipOut, secondFileSystem, second, copiedAssets);
+    }
+
+    private static void copyUiOverlayAssets(ZipOutputStream zipOut, FileSystem fileSystem,
+                                            @org.jetbrains.annotations.Nullable UiOverlayManifest manifest,
+                                            Set<String> copiedAssets) throws IOException {
+        if (manifest == null) {
+            return;
+        }
+
+        for (UiOverlayManifest.Sample sample : manifest.samples) {
+            copyUiOverlayLayer(zipOut, fileSystem, sample.beforeBlur, copiedAssets);
+            copyUiOverlayLayer(zipOut, fileSystem, sample.afterBlur, copiedAssets);
+        }
+    }
+
+    private static void copyUiOverlayLayer(ZipOutputStream zipOut, FileSystem fileSystem,
+                                           @org.jetbrains.annotations.Nullable UiOverlayManifest.Layer layer,
+                                           Set<String> copiedAssets) throws IOException {
+        if (layer == null) {
+            return;
+        }
+
+        for (UiOverlayManifest.Layer tile : layer.tiles) {
+            copyUiOverlayLayer(zipOut, fileSystem, tile, copiedAssets);
+        }
+
+        if (layer.path == null || !copiedAssets.add(layer.path)) {
+            return;
+        }
+
+        Path path = fileSystem.getPath("/" + layer.path);
+        if (!Files.exists(path)) {
+            Flashback.LOGGER.warn("Skipping missing UI overlay frame {}", path);
+            return;
+        }
+
+        ZipEntry zipEntry = new ZipEntry(layer.path);
+        zipOut.putNextEntry(zipEntry);
+        Files.copy(path, zipOut);
+        zipOut.closeEntry();
     }
 
     private static void extractChunks(RegistryAccess registryAccess, FileSystem fileSystem, StreamCodec<ByteBuf, Packet<? super ClientGamePacketListener>> gamePacketCodec,

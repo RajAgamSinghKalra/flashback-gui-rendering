@@ -1,5 +1,6 @@
 package com.moulberry.flashback.mixin.playback;
 
+import com.moulberry.flashback.IrisShaderCompatibility;
 import com.moulberry.flashback.ext.ClientClockManagerExt;
 import com.moulberry.flashback.state.EditorState;
 import com.moulberry.flashback.state.EditorStateManager;

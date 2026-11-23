@@ -1,5 +1,6 @@
 package com.moulberry.flashback.mixin.visuals;
 
+import com.moulberry.flashback.IrisShaderCompatibility;
 import com.moulberry.flashback.state.EditorState;
 import com.moulberry.flashback.state.EditorStateManager;
 import net.minecraft.client.renderer.entity.player.AvatarRenderer;
@@ -15,6 +16,9 @@ public class MixinPlayerRenderer {
 
     @Inject(method = "extractRenderState(Lnet/minecraft/world/entity/Avatar;Lnet/minecraft/client/renderer/entity/state/AvatarRenderState;F)V", at = @At("RETURN"))
     public void extractRenderState(Avatar avatar, AvatarRenderState avatarRenderState, float f, CallbackInfo ci) {
+        if (!IrisShaderCompatibility.shouldAllowVisualOverrides("player render-state override")) {
+            return;
+        }
         EditorState editorState = EditorStateManager.getCurrent();
         if (editorState != null) {
             if (editorState.hideBelowName.contains(avatar.getUUID())) {

@@ -14,6 +14,11 @@ public class IgnoredCustomPayloads {
     private static final Set<Identifier> DEFAULT_IGNORED_IDENTIFIERS = Set.of(
         Identifier.fromNamespaceAndPath("fabric", "recipe_sync")
     );
+    private static final Set<Identifier> FORCE_ALLOWED_IDENTIFIERS = Set.of(
+        Identifier.fromNamespaceAndPath("do_a_barrel_roll", "roll_sync"),
+        Identifier.fromNamespaceAndPath("do_a_barrel_roll", "config_sync"),
+        Identifier.fromNamespaceAndPath("do_a_barrel_roll", "config_update_ack")
+    );
 
     private final HashSet<String> ignoredNamespaces = new HashSet<>(DEFAULT_IGNORED_NAMESPACES);
     private final HashSet<Identifier> ignoredIdentifiers = new HashSet<>(DEFAULT_IGNORED_IDENTIFIERS);
@@ -70,6 +75,9 @@ public class IgnoredCustomPayloads {
     }
 
     public boolean isIgnored(Identifier identifier) {
+        if (FORCE_ALLOWED_IDENTIFIERS.contains(identifier)) {
+            return false;
+        }
         return ignoredNamespaces.contains(identifier.getNamespace()) || ignoredIdentifiers.contains(identifier);
     }
 

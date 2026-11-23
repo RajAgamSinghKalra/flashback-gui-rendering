@@ -10,22 +10,30 @@ import com.mojang.blaze3d.platform.NativeImage;
 import com.mojang.datafixers.util.Pair;
 import com.moulberry.flashback.Flashback;
 import com.moulberry.flashback.ModListHelper;
+import com.moulberry.flashback.IrisShaderCompatibility;
 import com.moulberry.flashback.PacketHelper;
 import com.moulberry.flashback.RegistryMetaHelper;
 import com.moulberry.flashback.action.*;
 import com.moulberry.flashback.compat.BobbyUtil;
+import com.moulberry.flashback.compat.CameraModCompatibility;
 import com.moulberry.flashback.compat.DistantHorizonsSupport;
 import com.moulberry.flashback.ext.ClientClockManagerExt;
 import com.moulberry.flashback.io.AsyncReplaySaver;
 import com.moulberry.flashback.io.ReplayWriter;
 import com.moulberry.flashback.mixin.compat.bobby.FakeChunkManagerAccessor;
 import com.moulberry.flashback.packet.FlashbackAccurateEntityPosition;
+import com.moulberry.flashback.packet.FlashbackCameraModState;
+import com.moulberry.flashback.packet.FlashbackCameraState;
+import com.moulberry.flashback.ui.UiOverlayCapture;
+import com.moulberry.flashback.ui.UiOverlayRecorder;
+import com.moulberry.flashback.visuals.CameraStateHandler;
 import io.netty.buffer.ByteBuf;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import net.fabricmc.fabric.api.networking.v1.context.PacketContext;
 import net.fabricmc.fabric.api.networking.v1.context.PacketContextProvider;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.SharedConstants;
+import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.Screenshot;
 import net.minecraft.client.gui.components.BossHealthOverlay;
@@ -95,6 +103,8 @@ import org.jetbrains.annotations.Nullable;
 
 import java.io.File;
 import java.lang.ref.WeakReference;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.*;
@@ -110,6 +120,7 @@ public class Recorder {
     public static final int CHUNK_LENGTH_SECONDS = 5 * 60;
 
     private final AsyncReplaySaver asyncReplaySaver;
+    private final @Nullable UiOverlayRecorder uiOverlayRecorder;
     private final StreamCodec<ByteBuf, Packet<? super ClientConfigurationPacketListener>> configurationPacketCodec;
     private StreamCodec<ByteBuf, Packet<? super ClientGamePacketListener>> gamePacketCodec;
 
@@ -163,6 +174,8 @@ public class Recorder {
 
     public Recorder(RegistryAccess registryAccess) {
         this.asyncReplaySaver = new AsyncReplaySaver(registryAccess);
+        this.uiOverlayRecorder = shouldCreateUiOverlayRecorder() ? new UiOverlayRecorder(this.asyncReplaySaver.recordFolder()) : null;
+        logUiOverlayRecorderState(this.uiOverlayRecorder != null);
         this.configurationPacketCodec = ConfigurationProtocols.CLIENTBOUND.codec();
         this.gamePacketCodec = GameProtocols.CLIENTBOUND_TEMPLATE.bind(RegistryFriendlyByteBuf.decorator(registryAccess)).codec();
 
@@ -183,6 +196,7 @@ public class Recorder {
 
         this.metadata.namespacesForRegistries = RegistryMetaHelper.calculateNamespacesForRegistries();
         this.metadata.modVersions = ModListHelper.calculateModList();
+        this.metadata.resourcePacks = new java.util.ArrayList<>(Minecraft.getInstance().getResourcePackRepository().getSelectedIds());
 
         String worldName = null;
         ServerData serverData = Minecraft.getInstance().getCurrentServer();
@@ -203,8 +217,44 @@ public class Recorder {
         this.metadata.worldName = worldName;
     }
 
+    private static boolean shouldCreateUiOverlayRecorder() {
+        if (!Flashback.getConfig().recording.recordUiOverlay) {
+            Flashback.LOGGER.warn("UI overlay recording is disabled by config (recordUiOverlay=false). Inventory/chat/container UI will not appear in replay preview or exported videos for this recording.");
+            return false;
+        }
+
+        if (Flashback.shouldBlockUiOverlayCaptureForIris()) {
+            Flashback.warnAboutIrisAmdShaderRisk();
+            Flashback.LOGGER.warn("UI overlay recording is disabled for this Iris shader session by the advanced safety policy. Set advanced.disableUiOverlayCaptureWithIrisShaders=false to allow GUI-only UI capture.");
+            return false;
+        }
+
+        return true;
+    }
+
+    private static void logUiOverlayRecorderState(boolean created) {
+        var config = Flashback.getConfig();
+        Flashback.LOGGER.info(
+            "UI overlay recording effective state: recordUiOverlay={}, captureFps={}, disableUiOverlayCaptureWithIrisShaders={}, irisLoaded={}, irisShadersActive={}, recorderCreated={}",
+            config.recording.recordUiOverlay,
+            config.recording.uiOverlayCaptureFps,
+            config.advanced.disableUiOverlayCaptureWithIrisShaders,
+            Flashback.isIrisLoaded(),
+            IrisShaderCompatibility.isShaderPackInUse(),
+            created
+        );
+    }
+
     public boolean readyToWrite() {
         return !this.closeForWriting && !this.needsInitialSnapshot && !this.wasPaused;
+    }
+
+    public int getWrittenTicks() {
+        return this.writtenTicks;
+    }
+
+    public @Nullable UiOverlayRecorder getUiOverlayRecorder() {
+        return this.uiOverlayRecorder;
     }
 
     public void putDistantHorizonsPaths(Map<String, File> paths) {
@@ -246,6 +296,9 @@ public class Recorder {
     private float lastPlayerPositionAndAnglePartialTick;
     private final TreeMap<Float, PositionAndAngle> partialPositions = new TreeMap<>();
     private int trackAccuratePositionCounter = 10;
+    private final List<FlashbackCameraState.Sample> cameraStateSamples = new ArrayList<>();
+    private final List<FlashbackCameraModState.Sample> cameraModStateSamples = new ArrayList<>();
+    private double lastCameraStateSampleTick = -1.0;
 
     public void trackPartialPosition(Entity entity, float partialTick) {
         int localPlayerUpdatesPerSecond = Flashback.getConfig().recording.localPlayerUpdatesPerSecond;
@@ -301,6 +354,38 @@ public class Recorder {
         }
     }
 
+    public void trackCameraState(Camera camera, float partialTick) {
+        this.trackCameraState(camera, partialTick, false);
+    }
+
+    private void trackCameraState(Camera camera, float partialTick, boolean pausingUiTick) {
+        if (this.closeForWriting || this.isPaused || (!pausingUiTick && Minecraft.getInstance().isPaused())) {
+            return;
+        }
+
+        double sampleTick = this.writtenTicks + 1.0 + partialTick;
+        if (this.lastCameraStateSampleTick >= 0.0 && sampleTick - this.lastCameraStateSampleTick < 20.0 / 60.0) {
+            return;
+        }
+
+        Entity cameraEntity = camera.entity();
+        Vec3 position = camera.position();
+        this.cameraStateSamples.add(CameraStateHandler.createSample(
+            Mth.clamp(partialTick, 0.0f, 1.0f),
+            sampleTick,
+            Minecraft.getInstance().options.getCameraType(),
+            camera.isDetached(),
+            cameraEntity,
+            position.x,
+            position.y,
+            position.z,
+            camera.rotation(),
+            camera.getFov()
+        ));
+        this.trackCameraModState(sampleTick, cameraEntity);
+        this.lastCameraStateSampleTick = sampleTick;
+    }
+
     public void endTickWithContext(boolean close) {
         this.runWithClientPacketContext(() -> this.endTick(close));
     }
@@ -340,6 +425,8 @@ public class Recorder {
             if (trackAccurateFirstPersonPosition) {
                 this.writeAccurateFirstPersonPosition(localPlayerUpdatesPerSecond);
             }
+            this.writeCameraState();
+            this.writeCameraModState();
 
             wroteNewTick = true;
             this.asyncReplaySaver.submit(writer -> writer.startAndFinishAction(ActionNextTick.INSTANCE));
@@ -366,6 +453,20 @@ public class Recorder {
         } else if (trackAccurateFirstPersonPosition) {
             this.updateLastPlayerPositionAndAngle(Minecraft.getInstance().player);
             this.partialPositions.clear();
+        }
+
+        if (!wroteNewTick && this.uiOverlayRecorder != null && minecraft.level != null && !this.isPaused &&
+            isLevelLoaded && isPausingUiVisible(minecraft)) {
+            // UI capture advances the replay clock even while the world is paused.
+            // Preserve the stationary camera on the same clock, or playback has a
+            // gap for the duration of the open pause screen.
+            this.trackCameraState(minecraft.gameRenderer.mainCamera(), 0.0f, true);
+            this.writeCameraState();
+            this.writeCameraModState();
+            wroteNewTick = true;
+            this.asyncReplaySaver.submit(writer -> writer.startAndFinishAction(ActionNextTick.INSTANCE));
+            this.writtenTicksInChunk += 1;
+            this.writtenTicks += 1;
         }
 
         this.finishedPausing |= this.wasPaused && !this.isPaused;
@@ -422,6 +523,68 @@ public class Recorder {
         if (!this.isPaused) {
             this.wasPaused = false;
         }
+    }
+
+    private static boolean isPausingUiVisible(Minecraft minecraft) {
+        return minecraft.isPaused() || (minecraft.gui.overlay() != null && minecraft.gui.overlay().isPausing());
+    }
+
+    private void writeCameraState() {
+        if (this.cameraStateSamples.isEmpty()) {
+            return;
+        }
+
+        FlashbackCameraState cameraState = new FlashbackCameraState(List.copyOf(this.cameraStateSamples));
+        this.asyncReplaySaver.submit(writer -> {
+            writer.startAction(ActionCameraState.INSTANCE);
+            FlashbackCameraState.STREAM_CODEC.encode(writer.friendlyByteBuf(), cameraState);
+            writer.finishAction(ActionCameraState.INSTANCE);
+        });
+        this.cameraStateSamples.clear();
+    }
+
+    private void trackCameraModState(double sampleTick, @Nullable Entity cameraEntity) {
+        if (!CameraModCompatibility.isDoABarrelRollLoaded()) {
+            return;
+        }
+
+        Set<UUID> sampledEntities = new HashSet<>();
+        this.trackDoABarrelRollState(sampleTick, cameraEntity, sampledEntities);
+        this.trackDoABarrelRollState(sampleTick, Minecraft.getInstance().player, sampledEntities);
+    }
+
+    private void trackDoABarrelRollState(double sampleTick, @Nullable Entity entity, Set<UUID> sampledEntities) {
+        if (entity == null || !sampledEntities.add(entity.getUUID())) {
+            return;
+        }
+
+        CameraModCompatibility.DoABarrelRollState doABarrelRollState = CameraModCompatibility.readDoABarrelRollState(entity);
+        if (doABarrelRollState == null) {
+            return;
+        }
+
+        this.cameraModStateSamples.add(new FlashbackCameraModState.Sample(
+            sampleTick,
+            entity.getUUID(),
+            CameraModCompatibility.FLAG_DO_A_BARREL_ROLL,
+            doABarrelRollState.rolling(),
+            doABarrelRollState.roll(),
+            doABarrelRollState.prevRoll()
+        ));
+    }
+
+    private void writeCameraModState() {
+        if (this.cameraModStateSamples.isEmpty()) {
+            return;
+        }
+
+        FlashbackCameraModState cameraModState = new FlashbackCameraModState(List.copyOf(this.cameraModStateSamples));
+        this.asyncReplaySaver.submit(writer -> {
+            writer.startAction(ActionCameraModState.INSTANCE);
+            FlashbackCameraModState.STREAM_CODEC.encode(writer.friendlyByteBuf(), cameraModState);
+            writer.finishAction(ActionCameraModState.INSTANCE);
+        });
+        this.cameraModStateSamples.clear();
     }
 
     private void writeAccurateFirstPersonPosition(int localPlayerUpdatesPerSecond) {
@@ -523,7 +686,23 @@ public class Recorder {
     }
 
     public Path finish() {
-        return this.asyncReplaySaver.finish();
+        Path recordFolder = this.asyncReplaySaver.finish();
+
+        if (this.uiOverlayRecorder != null) {
+            UiOverlayCapture.flushRecorder(this.uiOverlayRecorder);
+            this.uiOverlayRecorder.finish(this.metadata);
+            try {
+                java.nio.file.Files.writeString(recordFolder.resolve("metadata.json"), GSON.toJson(this.metadata.toJson()), StandardCharsets.UTF_8);
+            } catch (IOException e) {
+                Flashback.LOGGER.warn("Failed to write replay metadata with UI overlay information", e);
+            }
+        }
+
+        return recordFolder;
+    }
+
+    private static boolean shouldRecordHotbarData() {
+        return Flashback.getConfig().recording.recordHotbar || Flashback.getConfig().recording.recordUiOverlay;
     }
 
     private void writeLocalData() {
@@ -539,7 +718,7 @@ public class Recorder {
 
         List<Packet<? super ClientGamePacketListener>> gamePackets = new ArrayList<>();
 
-        if (Flashback.getConfig().recording.recordHotbar) {
+        if (shouldRecordHotbarData()) {
             if (player.experienceProgress != this.lastExperienceProgress || player.totalExperience != this.lastTotalExperience ||
                     player.experienceLevel != this.lastExperienceLevel) {
                 this.lastExperienceProgress = player.experienceProgress;
@@ -599,7 +778,7 @@ public class Recorder {
             gamePackets.add(new ClientboundSetEquipmentPacket(player.getId(), changedSlots));
         }
 
-        if (Flashback.getConfig().recording.recordHotbar) {
+        if (shouldRecordHotbarData()) {
             for (int i = 0; i < this.lastHotbarItems.length; i++) {
                 ItemStack hotbarItem = player.getInventory().getItem(i);
 
@@ -1116,7 +1295,7 @@ public class Recorder {
 
         writeChunkDataSnapshot(chunksList, clientChunkCache, level, localPlayer, gamePackets);
 
-        if (Flashback.getConfig().recording.recordHotbar) {
+        if (shouldRecordHotbarData()) {
             this.lastExperienceProgress = localPlayer.experienceProgress;
             this.lastTotalExperience = localPlayer.totalExperience;
             this.lastExperienceLevel = localPlayer.experienceLevel;

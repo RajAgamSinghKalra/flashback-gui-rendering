@@ -1,5 +1,6 @@
 package com.moulberry.flashback.mixin.visuals;
 
+import com.moulberry.flashback.IrisShaderCompatibility;
 import com.moulberry.flashback.state.EditorState;
 import com.moulberry.flashback.state.EditorStateManager;
 import net.minecraft.world.entity.Entity;
@@ -26,6 +27,9 @@ public abstract class MixinLivingEntity extends Entity  {
 
     @Inject(method = "getItemBySlot", at = @At("HEAD"), cancellable = true)
     public void getItemBySlot(EquipmentSlot equipmentSlot, CallbackInfoReturnable<ItemStack> cir) {
+        if (!IrisShaderCompatibility.shouldAllowVisualOverrides("living entity equipment override")) {
+            return;
+        }
         if (this.level().isClientSide()) {
             EditorState editorState = EditorStateManager.getCurrent();
             if (editorState != null) {

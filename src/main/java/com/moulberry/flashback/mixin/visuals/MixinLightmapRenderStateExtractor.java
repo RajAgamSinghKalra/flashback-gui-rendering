@@ -1,5 +1,6 @@
 package com.moulberry.flashback.mixin.visuals;
 
+import com.moulberry.flashback.IrisShaderCompatibility;
 import com.moulberry.flashback.state.EditorState;
 import com.moulberry.flashback.state.EditorStateManager;
 import net.minecraft.client.renderer.LightmapRenderStateExtractor;
@@ -14,6 +15,10 @@ public class MixinLightmapRenderStateExtractor {
 
     @Inject(method = "extract", at = @At("RETURN"))
     public void extractReturn(LightmapRenderState renderState, float partialTicks, CallbackInfo ci) {
+        if (!IrisShaderCompatibility.shouldAllowVisualOverrides("lightmap override")) {
+            return;
+        }
+
         if (!renderState.needsUpdate) {
             return;
         }

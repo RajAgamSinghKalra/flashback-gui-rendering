@@ -10,6 +10,7 @@ import com.mojang.renderpearl.api.buffers.GpuBuffer;
 import com.mojang.renderpearl.api.commands.RenderPass;
 import com.mojang.renderpearl.api.pipeline.PrimitiveTopology;
 import com.moulberry.flashback.Flashback;
+import com.moulberry.flashback.IrisShaderCompatibility;
 import com.moulberry.flashback.editor.ui.ReplayUI;
 import com.moulberry.flashback.playback.ReplayServer;
 import com.moulberry.flashback.record.FlashbackMeta;
@@ -48,6 +49,10 @@ public class WorldRenderHook {
     private record TextRenderableAt(TextRenderable textRenderable, Vector3f location) {}
 
     public static void renderHook(PoseStack poseStack, CameraRenderState camera) {
+        if (!IrisShaderCompatibility.shouldAllowWorldRenderingMutations("world overlay draw hook")) {
+            return;
+        }
+
         ReplayServer replayServer = Flashback.getReplayServer();
         if (replayServer == null || Flashback.isExporting() || !ReplayUI.isActive()) {
             return;

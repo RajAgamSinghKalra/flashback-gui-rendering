@@ -1,5 +1,6 @@
 package com.moulberry.flashback.mixin.visuals;
 
+import com.moulberry.flashback.IrisShaderCompatibility;
 import com.moulberry.flashback.state.EditorState;
 import com.moulberry.flashback.state.EditorStateManager;
 import com.moulberry.flashback.visuals.ReplayVisuals;
@@ -19,6 +20,9 @@ public abstract class MixinLevel {
 
     @Inject(method = "getRainLevel", at = @At("HEAD"), cancellable = true)
     public void getRainLevel(float f, CallbackInfoReturnable<Float> cir) {
+        if (!IrisShaderCompatibility.shouldAllowVisualOverrides("rain level override")) {
+            return;
+        }
         EditorState editorState = EditorStateManager.getCurrent();
         if (editorState != null && (Object)this instanceof ClientLevel) {
             switch (editorState.replayVisuals.overrideWeatherMode) {
@@ -31,6 +35,9 @@ public abstract class MixinLevel {
 
     @Inject(method = "getThunderLevel", at = @At("HEAD"), cancellable = true)
     public void getThunderLevel(float f, CallbackInfoReturnable<Float> cir) {
+        if (!IrisShaderCompatibility.shouldAllowVisualOverrides("thunder level override")) {
+            return;
+        }
         EditorState editorState = EditorStateManager.getCurrent();
         if (editorState != null && (Object)this instanceof ClientLevel) {
             switch (editorState.replayVisuals.overrideWeatherMode) {
@@ -42,6 +49,9 @@ public abstract class MixinLevel {
 
     @Inject(method = {"getDefaultClockTime", "getOverworldClockTime"}, at = @At("HEAD"), cancellable = true, require = 0)
     public void getDefaultClockTime(CallbackInfoReturnable<Long> cir) {
+        if (!IrisShaderCompatibility.shouldAllowVisualOverrides("time of day override")) {
+            return;
+        }
         EditorState editorState = EditorStateManager.getCurrent();
         if (editorState != null && (Object)this instanceof ClientLevel && editorState.replayVisuals.overrideTimeOfDay >= 0) {
             cir.setReturnValue(editorState.replayVisuals.overrideTimeOfDay);

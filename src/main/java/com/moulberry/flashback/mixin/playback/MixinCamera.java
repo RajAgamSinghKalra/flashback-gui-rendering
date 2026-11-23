@@ -5,14 +5,18 @@ import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.moulberry.flashback.Flashback;
+import com.moulberry.flashback.IrisShaderCompatibility;
 import com.moulberry.flashback.combo_options.ExportProjection;
 import com.moulberry.flashback.exporting.ExportJob;
 import com.moulberry.flashback.ext.MinecraftExt;
 import com.moulberry.flashback.ext.ProjectionExt;
+import com.moulberry.flashback.packet.FlashbackCameraState;
 import com.moulberry.flashback.state.EditorState;
 import com.moulberry.flashback.state.EditorStateManager;
 import com.moulberry.flashback.visuals.AccurateEntityPositionHandler;
 import com.moulberry.flashback.visuals.CameraRotation;
+import com.moulberry.flashback.visuals.CameraStateHandler;
+import com.moulberry.flashback.visuals.RecordedCameraRenderState;
 import net.minecraft.client.Camera;
 import net.minecraft.client.DeltaTracker;
 import net.minecraft.client.Minecraft;
@@ -35,7 +39,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 import java.util.Objects;
 
-@Mixin(Camera.class)
+@Mixin(value = Camera.class, priority = 1100)
 public abstract class MixinCamera {
 
     @Shadow
@@ -83,6 +87,22 @@ public abstract class MixinCamera {
     @Shadow
     private boolean isPanoramicMode;
 
+    @Inject(method = "update", at = @At(value = "HEAD"))
+    public void flashback$applyRecordedCameraOwnershipBeforeUpdate(DeltaTracker deltaTracker, CallbackInfo ci) {
+        if (!Flashback.isInReplay()) {
+            return;
+        }
+
+        float partialTick = deltaTracker.getGameTimeDeltaPartialTick(false);
+        FlashbackCameraState.Sample cameraStateSample = RecordedCameraRenderState.applyForRenderFrame(partialTick, "Camera.update");
+        if (cameraStateSample != null) {
+            Entity sampleCameraEntity = CameraStateHandler.applyCameraEntity(cameraStateSample);
+            if (sampleCameraEntity != null) {
+                this.entity = sampleCameraEntity;
+            }
+        }
+    }
+
     @Inject(method = "update", at = @At(value = "RETURN"))
     public void afterSetPosition(DeltaTracker deltaTracker, CallbackInfo ci)  {
         if (this.entity == null) {
@@ -90,13 +110,36 @@ public abstract class MixinCamera {
         }
 
         float partialTick = deltaTracker.getGameTimeDeltaPartialTick(false);
-        Vector2f rotation = AccurateEntityPositionHandler.getAccurateRotation(this.entity, partialTick);
-        if (rotation != null) {
-            this.setRotation(rotation.y, rotation.x);
+        if (IrisShaderCompatibility.shouldAllowCameraOverrides("post Camera.update pose replacement")) {
+            Vector2f rotation = AccurateEntityPositionHandler.getAccurateRotation(this.entity, partialTick);
+            if (rotation != null) {
+                this.setRotation(rotation.y, rotation.x);
+            }
+            Vector3d position = AccurateEntityPositionHandler.getAccuratePosition(this.entity, partialTick);
+            if (position != null) {
+                this.setPosition(position.x, position.y + Mth.lerp(partialTick, this.eyeHeightOld, this.eyeHeight), position.z);
+            }
+
+            FlashbackCameraState.Sample cameraStateSample = CameraStateHandler.getPoseSample(partialTick);
+            if (cameraStateSample != null) {
+                Entity sampleCameraEntity = CameraStateHandler.applyCameraEntity(cameraStateSample);
+                if (sampleCameraEntity != null) {
+                    this.entity = sampleCameraEntity;
+                }
+                CameraStateHandler.applyCameraType(cameraStateSample);
+                this.setPosition(cameraStateSample.x(), cameraStateSample.y(), cameraStateSample.z());
+                CameraStateHandler.setActiveSample(cameraStateSample);
+                this.matrixPropertiesDirty |= 3;
+            } else {
+                CameraStateHandler.setActiveSample(null);
+            }
+            this.matrixPropertiesDirty |= 3;
+        } else {
+            CameraStateHandler.setActiveSample(null);
         }
-        Vector3d position = AccurateEntityPositionHandler.getAccuratePosition(this.entity, partialTick);
-        if (position != null) {
-            this.setPosition(position.x, position.y + Mth.lerp(partialTick, this.eyeHeightOld, this.eyeHeight), position.z);
+
+        if (Flashback.RECORDER != null) {
+            Flashback.RECORDER.trackCameraState((Camera)(Object)this, partialTick);
         }
     }
 
@@ -111,7 +154,16 @@ public abstract class MixinCamera {
 
     @WrapMethod(method = "rotation")
     public Quaternionf rotation(Operation<Quaternionf> original) {
+        FlashbackCameraState.Sample cameraStateSample = CameraStateHandler.getActiveSample();
+        if (cameraStateSample != null) {
+            this.matrixPropertiesDirty |= 3;
+            return CameraStateHandler.rotationFromSample(cameraStateSample);
+        }
+
         Quaternionf originalQuaternion = original.call();
+        if (!IrisShaderCompatibility.shouldAllowCameraOverrides("camera roll/shake quaternion override")) {
+            return originalQuaternion;
+        }
         Quaternionf modifiedQuaternion = CameraRotation.modifyViewQuaternion(originalQuaternion);
         if (!Objects.equals(originalQuaternion, modifiedQuaternion)) {
             this.matrixPropertiesDirty |= 3;
@@ -121,6 +173,15 @@ public abstract class MixinCamera {
 
     @WrapMethod(method = "calculateFov")
     public float calculateFov(float partialTicks, Operation<Float> original) {
+        if (!IrisShaderCompatibility.shouldAllowCameraOverrides("camera FOV override")) {
+            return original.call(partialTicks);
+        }
+
+        FlashbackCameraState.Sample cameraStateSample = CameraStateHandler.getPoseSample(partialTicks);
+        if (cameraStateSample != null) {
+            return cameraStateSample.fov();
+        }
+
         if (Flashback.isInReplay()) {
             if (this.isPanoramicMode) {
                 return 90.0f;
@@ -141,14 +202,19 @@ public abstract class MixinCamera {
     public void update_setupPerspective(Camera instance, float zNear, float zFar, float fov, float width, float height, Operation<Void> original) {
         ExportJob exportJob = Flashback.EXPORT_JOB;
         if (exportJob != null) {
-            if (exportJob.getSettings().projection() == ExportProjection.ORTHOGRAPHIC) {
+            ExportProjection projection = exportJob.getEffectiveProjection();
+            if (!IrisShaderCompatibility.shouldAllowCameraOverrides("export projection override")) {
+                original.call(instance, zNear, zFar, fov, width, height);
+                return;
+            }
+            if (projection == ExportProjection.ORTHOGRAPHIC) {
                 float orthoHeight = (float)(Math.tan(Math.toRadians(fov/2)) * zFar / 4f) / exportJob.getSettings().orthographicZoom();
                 float orthoWidth = width / height * orthoHeight;
 
                 this.setupOrtho(-zFar, zFar, orthoWidth, orthoHeight, false);
                 ((ProjectionExt)this.projection).flashback$setCenteredOrtho(true);
                 return;
-            } else if (exportJob.getSettings().projection() == ExportProjection.CUBE_MAP || exportJob.getSettings().projection() == ExportProjection.EQUIRECTANGULAR) {
+            } else if (projection == ExportProjection.CUBE_MAP || projection == ExportProjection.EQUIRECTANGULAR) {
                 width = Math.max(width, height);
                 height = Math.max(width, height);
             }
@@ -160,7 +226,8 @@ public abstract class MixinCamera {
     @Inject(method = "createProjectionMatrixForCulling", at = @At("HEAD"), cancellable = true)
     public void createProjectionMatrixForCulling(CallbackInfoReturnable<Matrix4f> cir) {
         ExportJob exportJob = Flashback.EXPORT_JOB;
-        if (exportJob != null && exportJob.getSettings().projection() == ExportProjection.ORTHOGRAPHIC) {
+        if (exportJob != null && exportJob.getEffectiveProjection() == ExportProjection.ORTHOGRAPHIC &&
+            IrisShaderCompatibility.shouldAllowCameraOverrides("orthographic culling projection override")) {
             Matrix4f projection = new Matrix4f();
 
             float fovForCulling = Math.max(this.fov, this.minecraft.options.fov().get().intValue());

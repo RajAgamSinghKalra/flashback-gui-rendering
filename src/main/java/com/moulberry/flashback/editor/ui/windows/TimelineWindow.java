@@ -30,6 +30,7 @@ import com.moulberry.flashback.editor.ui.ImGuiHelper;
 import com.moulberry.flashback.record.FlashbackMeta;
 import com.moulberry.flashback.state.KeyframeTrack;
 import com.moulberry.flashback.utils.InputHelper;
+import com.moulberry.flashback.visuals.CameraStateHandler;
 import com.moulberry.flashback.visuals.ReplayVisuals;
 import imgui.moulberry90.ImDrawList;
 import imgui.moulberry90.ImGui;
@@ -302,7 +303,9 @@ public class TimelineWindow {
                 }
             }
             if (isCtrlDown) {
-                editorState.applyKeyframes(new MinecraftKeyframeHandler(Minecraft.getInstance()), cursorTicks, editorSceneStamp);
+                MinecraftKeyframeHandler keyframeHandler = new MinecraftKeyframeHandler(Minecraft.getInstance());
+                editorState.applyKeyframes(keyframeHandler, cursorTicks, editorSceneStamp);
+                CameraStateHandler.setPreviewCameraKeyframed(keyframeHandler.hasAppliedCameraPosition());
             }
             if (!isCtrlDown && !isShiftDown) {
                 ImGuiHelper.drawTooltip(I18n.get("flashback.hold_ctrl_to_apply_keyframes"));

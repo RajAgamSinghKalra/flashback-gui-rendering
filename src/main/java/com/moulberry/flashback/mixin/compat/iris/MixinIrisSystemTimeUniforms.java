@@ -1,6 +1,7 @@
 package com.moulberry.flashback.mixin.compat.iris;
 
 import com.moulberry.flashback.Flashback;
+import com.moulberry.flashback.IrisShaderCompatibility;
 import com.moulberry.mixinconstraints.annotations.IfModLoaded;
 import net.irisshaders.iris.uniforms.SystemTimeUniforms;
 import org.spongepowered.asm.mixin.Mixin;
@@ -16,7 +17,7 @@ public class MixinIrisSystemTimeUniforms {
 
     @Inject(method = "getFrameTimeCounter", at = @At("HEAD"), require = 0, cancellable = true)
     public void getFrameTimeCounter(CallbackInfoReturnable<Float> cir) {
-        if (Flashback.isExporting()) {
+        if (Flashback.isExporting() && !IrisShaderCompatibility.isActive()) {
             double currentTick = Flashback.EXPORT_JOB.getCurrentTickDouble();
             cir.setReturnValue((float)(currentTick / 20));
         }
@@ -24,7 +25,7 @@ public class MixinIrisSystemTimeUniforms {
 
     @Inject(method = "getLastFrameTime", at = @At("HEAD"), require = 0, cancellable = true)
     public void getLastFrameTime(CallbackInfoReturnable<Float> cir) {
-        if (Flashback.isExporting()) {
+        if (Flashback.isExporting() && !IrisShaderCompatibility.isActive()) {
             cir.setReturnValue((float)(1 / Flashback.EXPORT_JOB.getSettings().framerate()));
         }
     }

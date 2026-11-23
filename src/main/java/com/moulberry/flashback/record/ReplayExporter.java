@@ -14,6 +14,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.stream.Stream;
 import java.util.Iterator;
 import java.util.zip.Deflater;
 import java.util.zip.ZipEntry;
@@ -53,6 +54,12 @@ public class ReplayExporter {
         if (meta.chunks.isEmpty()) {
             Flashback.LOGGER.error("Cannot export, no chunk files exist");
             return;
+        }
+
+        Path uiOverlayPath = recordFolder.resolve("ui_overlay");
+        if (meta.uiOverlay != null && (!Files.exists(uiOverlayPath) || !Files.isDirectory(uiOverlayPath))) {
+            Flashback.LOGGER.warn("Replay metadata references UI overlay, but {} is missing", uiOverlayPath);
+            meta.uiOverlay = null;
         }
 
         try {
@@ -104,6 +111,11 @@ public class ReplayExporter {
                 zipOut.closeEntry();
             }
 
+            // Write UI overlay payload
+            if (meta.uiOverlay != null && Files.exists(uiOverlayPath) && Files.isDirectory(uiOverlayPath)) {
+                copyDirectoryToZip(recordFolder, uiOverlayPath, zipOut);
+            }
+
             // Write chunks
             for (String chunkName : meta.chunks.keySet()) {
                 Path chunkPath = recordFolder.resolve(chunkName);
@@ -126,6 +138,20 @@ public class ReplayExporter {
             }
         } catch (Exception e) {
             Flashback.LOGGER.error("Exception exporting replay", e);
+        }
+    }
+
+    private static void copyDirectoryToZip(Path recordFolder, Path directory, ZipOutputStream zipOut) throws IOException {
+        try (Stream<Path> stream = Files.walk(directory)) {
+            Iterator<Path> iterator = stream.filter(Files::isRegularFile).iterator();
+            while (iterator.hasNext()) {
+                Path path = iterator.next();
+                String entryName = recordFolder.relativize(path).toString().replace('\\', '/');
+                ZipEntry zipEntry = new ZipEntry(entryName);
+                zipOut.putNextEntry(zipEntry);
+                Files.copy(path, zipOut);
+                zipOut.closeEntry();
+            }
         }
     }
 

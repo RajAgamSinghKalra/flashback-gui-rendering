@@ -1,5 +1,6 @@
 package com.moulberry.flashback.mixin;
 
+import com.moulberry.flashback.IrisShaderCompatibility;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import com.llamalad7.mixinextras.sugar.Local;
@@ -14,6 +15,7 @@ import com.moulberry.flashback.utils.FramebufferUtils;
 import com.moulberry.flashback.FreezeSlowdownFormula;
 import com.moulberry.flashback.utils.WindowSizeTracker;
 import com.moulberry.flashback.combo_options.GlowingOverride;
+import com.moulberry.flashback.compat.CameraModCompatibility;
 import com.moulberry.flashback.configuration.FlashbackConfigV1;
 import com.moulberry.flashback.exporting.ExportJob;
 import com.moulberry.flashback.exporting.ExportJobQueue;
@@ -28,6 +30,7 @@ import com.moulberry.flashback.playback.ReplayServer;
 import com.moulberry.flashback.ext.MinecraftExt;
 import com.moulberry.flashback.editor.ui.ReplayUI;
 import com.moulberry.flashback.visuals.AccurateEntityPositionHandler;
+import com.moulberry.flashback.visuals.CameraStateHandler;
 import it.unimi.dsi.fastutil.floats.FloatUnaryOperator;
 import net.minecraft.client.gui.Gui;
 import net.minecraft.server.MinecraftServer;
@@ -115,31 +118,50 @@ public abstract class MixinMinecraft extends ReentrantBlockableEventLoop<Runnabl
             ReplayUI.drawOverlay();
             ((WindowExt)(Object)Minecraft.getInstance().getWindow()).flashback$updateScaledFramebuffer(true);
         }
+        GpuTextureView outputTextureView = textureView;
         if (ReplayUI.isActive() && ReplayUI.compositeOnTop != null) {
-            var window = Minecraft.getInstance().getWindow();
-            int framebufferWidth = WindowSizeTracker.getWidth(window);
-            int framebufferHeight = WindowSizeTracker.getHeight(window);
-
-            this.compositeRenderTarget = FramebufferUtils.resizeOrCreateFramebuffer(this.compositeRenderTarget, framebufferWidth, framebufferHeight, false);
-            FramebufferUtils.clear(this.compositeRenderTarget, FramebufferUtils.TRANSPARENT_CLEAR_COLOUR);
-
-            if (ReplayUI.frameWidth > 1 && ReplayUI.frameHeight > 1) {
-                float frameTop = (float) ReplayUI.frameY / ReplayUI.viewportSizeY;
-                float frameLeft = (float) ReplayUI.frameX / ReplayUI.viewportSizeX;
-                float frameWidth = (float) ReplayUI.frameWidth / ReplayUI.viewportSizeX;
-                float frameHeight = (float) ReplayUI.frameHeight / ReplayUI.viewportSizeY;
-
-                FramebufferUtils.blitTo(textureView, this.compositeRenderTarget,
-                    frameLeft, frameTop, frameLeft+frameWidth, frameTop+frameHeight);
+            if (IrisShaderCompatibility.isActive()) {
+                IrisShaderCompatibility.logSuppressed("offscreen editor surface compositor", "editor UI is rendered directly to the main target in Iris shader isolation mode.");
+                original.call(instance, commandEncoder, textureView);
+                return;
             }
 
-            FramebufferUtils.blitTo(ReplayUI.compositeOnTop.getColorTextureView(), this.compositeRenderTarget,
-                0, 0, 1, 1);
+            boolean shaderSafeCompositor = Flashback.shouldUseShaderSafeCompositor();
+            if (shaderSafeCompositor) {
+                Flashback.warnAboutShaderSafeCompositor();
+            }
 
-            original.call(instance, commandEncoder, this.compositeRenderTarget.getColorTextureView());
-        } else {
-            original.call(instance, commandEncoder, textureView);
+            try {
+                var window = Minecraft.getInstance().getWindow();
+                int framebufferWidth = WindowSizeTracker.getWidth(window);
+                int framebufferHeight = WindowSizeTracker.getHeight(window);
+
+                this.compositeRenderTarget = FramebufferUtils.resizeOrCreateFramebuffer(this.compositeRenderTarget, framebufferWidth, framebufferHeight, false);
+                FramebufferUtils.clear(this.compositeRenderTarget, FramebufferUtils.TRANSPARENT_CLEAR_COLOUR);
+
+                if (ReplayUI.frameWidth > 1 && ReplayUI.frameHeight > 1) {
+                    float frameTop = (float) ReplayUI.frameY / ReplayUI.viewportSizeY;
+                    float frameLeft = (float) ReplayUI.frameX / ReplayUI.viewportSizeX;
+                    float frameWidth = (float) ReplayUI.frameWidth / ReplayUI.viewportSizeX;
+                    float frameHeight = (float) ReplayUI.frameHeight / ReplayUI.viewportSizeY;
+
+                    FramebufferUtils.blitTo(textureView, this.compositeRenderTarget,
+                        frameLeft, frameTop, frameLeft+frameWidth, frameTop+frameHeight);
+                }
+
+                FramebufferUtils.blitTo(ReplayUI.compositeOnTop.getColorTextureView(), this.compositeRenderTarget,
+                    0, 0, 1, 1);
+
+                outputTextureView = this.compositeRenderTarget.getColorTextureView();
+            } catch (RuntimeException exception) {
+                if (!shaderSafeCompositor) {
+                    throw exception;
+                }
+                Flashback.warnAboutShaderSafeCompositorFailure(exception);
+                outputTextureView = textureView;
+            }
         }
+        original.call(instance, commandEncoder, outputTextureView);
     }
 
     @Inject(method = "framebufferSizeChanged", at = @At("HEAD"))
@@ -156,6 +178,9 @@ public abstract class MixinMinecraft extends ReentrantBlockableEventLoop<Runnabl
 
     @Inject(method = "shouldEntityAppearGlowing", at = @At("HEAD"), cancellable = true)
     private void shouldEntityAppearGlowing(Entity entity, CallbackInfoReturnable<Boolean> cir) {
+        if (!IrisShaderCompatibility.shouldAllowVisualOverrides("entity glowing outline override")) {
+            return;
+        }
         EditorState editorState = EditorStateManager.getCurrent();
         if (editorState != null) {
             GlowingOverride glowingOverride = editorState.glowingOverride.get(entity.getUUID());
@@ -208,7 +233,9 @@ public abstract class MixinMinecraft extends ReentrantBlockableEventLoop<Runnabl
         }
 
         FlashbackConfigV1 config = Flashback.getConfig();
-        if (inReplay && !config.advanced.disableThirdPersonCancel) {
+        if (inReplay && !config.advanced.disableThirdPersonCancel &&
+            !CameraStateHandler.hasReceivedCameraState() &&
+            !CameraModCompatibility.hasKnownCameraModLoaded()) {
             // Force camera type to first person
             if (ReplayUI.isActive() && this.player != null && this.getCameraEntity() == this.player && this.options.getCameraType() != CameraType.FIRST_PERSON) {
                 this.options.setCameraType(CameraType.FIRST_PERSON);
@@ -390,7 +417,9 @@ public abstract class MixinMinecraft extends ReentrantBlockableEventLoop<Runnabl
 
             try {
                 EditorState editorState = EditorStateManager.get(replayServer.getMetadata().replayIdentifier);
-                editorState.applyKeyframes(new MinecraftKeyframeHandler((Minecraft) (Object) this), (float) replayServer.getPartialReplayTick());
+                MinecraftKeyframeHandler keyframeHandler = new MinecraftKeyframeHandler((Minecraft) (Object) this);
+                editorState.applyKeyframes(keyframeHandler, (float) replayServer.getPartialReplayTick());
+                CameraStateHandler.setPreviewCameraKeyframed(keyframeHandler.hasAppliedCameraPosition());
             } finally {
                 if (!paused) {
                     FlashbackAudioManager.finishHandling();

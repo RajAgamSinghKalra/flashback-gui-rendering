@@ -4,6 +4,7 @@ import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import com.llamalad7.mixinextras.sugar.Share;
 import com.llamalad7.mixinextras.sugar.ref.LocalRef;
+import com.moulberry.flashback.IrisShaderCompatibility;
 import com.moulberry.flashback.state.EditorState;
 import com.moulberry.flashback.state.EditorStateManager;
 import net.minecraft.client.renderer.entity.player.AvatarRenderer;
@@ -25,9 +26,11 @@ public class MixinAvatarRenderer {
             @Share(value = "hiddenModelParts", namespace = "flashback") LocalRef<EnumSet<PlayerModelPart>> hiddenPartsRef) {
         EnumSet<PlayerModelPart> hiddenParts = null;
 
-        EditorState editorState = EditorStateManager.getCurrent();
-        if (editorState != null) {
-            hiddenParts = editorState.hiddenModelParts.get(avatar.getUUID());
+        if (IrisShaderCompatibility.shouldAllowVisualOverrides("avatar renderer hidden model parts")) {
+            EditorState editorState = EditorStateManager.getCurrent();
+            if (editorState != null) {
+                hiddenParts = editorState.hiddenModelParts.get(avatar.getUUID());
+            }
         }
 
         hiddenPartsRef.set(hiddenParts);

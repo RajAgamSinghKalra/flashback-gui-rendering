@@ -2,8 +2,8 @@
 	"schemaVersion": 1,
 	"id": "flashback",
 	"version": "${version}",
-	"name": "Flashback",
-	"description": "Record your gameplay, view the recordings and export cinematic shots",
+	"name": "Flashback with All GUI Rendering (Experimental)",
+	"description": "Unofficial experimental Flashback build with recorded GUI overlays and compatibility work.",
 	"authors": [
 		"Moulberry"
 	],

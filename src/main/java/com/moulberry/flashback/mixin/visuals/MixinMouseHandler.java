@@ -2,6 +2,7 @@ package com.moulberry.flashback.mixin.visuals;
 
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
+import com.moulberry.flashback.IrisShaderCompatibility;
 import com.moulberry.flashback.state.EditorState;
 import com.moulberry.flashback.state.EditorStateManager;
 import com.moulberry.flashback.Utils;
@@ -22,6 +23,9 @@ public class MixinMouseHandler {
     @WrapOperation(method = "turnPlayer", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/Options;sensitivity()Lnet/minecraft/client/OptionInstance;"))
     public OptionInstance<Double> turnPlayer_sensitivity(Options instance, Operation<OptionInstance<Double>> original) {
         OptionInstance<Double> sensitivity = original.call(instance);
+        if (!IrisShaderCompatibility.shouldAllowCameraOverrides("mouse sensitivity FOV override")) {
+            return sensitivity;
+        }
         EditorState editorState = EditorStateManager.getCurrent();
         if (editorState != null && editorState.replayVisuals.overrideFov) {
             float newFov = editorState.replayVisuals.overrideFovAmount;

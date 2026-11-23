@@ -94,6 +94,10 @@ public class AsyncReplaySaver {
         }).start();
     }
 
+    public Path recordFolder() {
+        return this.recordFolder;
+    }
+
     public void submit(Consumer<ReplayWriter> consumer) {
         this.checkForError();
 

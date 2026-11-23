@@ -1,5 +1,6 @@
 package com.moulberry.flashback.mixin.visuals;
 
+import com.moulberry.flashback.IrisShaderCompatibility;
 import com.moulberry.flashback.state.EditorState;
 import com.moulberry.flashback.state.EditorStateManager;
 import com.moulberry.flashback.ext.OptionsExt;
@@ -24,6 +25,9 @@ public class MixinOptions implements OptionsExt {
 
     @Inject(method = "fov", at = @At("RETURN"), cancellable = true)
     public void fov(CallbackInfoReturnable<OptionInstance<Integer>> cir) {
+        if (!IrisShaderCompatibility.shouldAllowCameraOverrides("options FOV override")) {
+            return;
+        }
         EditorState editorState = EditorStateManager.getCurrent();
         if (editorState != null && editorState.replayVisuals.overrideFov) {
             if (this.cachedFovOptionInstance == null || this.cachedFovOptionInstance.get() != Math.round(editorState.replayVisuals.overrideFovAmount)) {

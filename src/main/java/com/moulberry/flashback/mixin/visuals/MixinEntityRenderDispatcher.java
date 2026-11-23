@@ -2,6 +2,7 @@ package com.moulberry.flashback.mixin.visuals;
 
 import com.llamalad7.mixinextras.sugar.Local;
 import com.moulberry.flashback.Flashback;
+import com.moulberry.flashback.IrisShaderCompatibility;
 import com.moulberry.flashback.state.EditorState;
 import com.moulberry.flashback.state.EditorStateManager;
 import net.minecraft.client.renderer.culling.Frustum;
@@ -35,6 +36,9 @@ public abstract class MixinEntityRenderDispatcher {
 
     @Inject(method = "extractEntity", at = @At("RETURN"))
     public void extractEntity(Entity entity, float partialTick, CallbackInfoReturnable<EntityRenderState> cir) {
+        if (!IrisShaderCompatibility.shouldAllowVisualOverrides("entity render-state override")) {
+            return;
+        }
         EntityRenderState renderState = cir.getReturnValue();
 
         if (Flashback.isInReplay()) {

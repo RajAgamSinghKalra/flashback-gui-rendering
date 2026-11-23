@@ -12,6 +12,7 @@
   "flashback.select_replay.duration": "Duration: %s",
 
   "flashback.option.per_second": "%s/s",
+  "flashback.option.fps": "%s FPS",
 
   "key.category.flashback.keybind": "Flashback Keybinds",
   "flashback.keybind.create_marker_1": "Create Marker #1",
@@ -36,6 +37,10 @@
   "flashback.option.recording.mark_dimension_changes.description": "Automatically add a marker to the replay when switching dimensions",
   "flashback.option.recording.record_hotbar": "Record Hotbar",
   "flashback.option.recording.record_hotbar.description": "Adds first-person hotbar information into the replay",
+  "flashback.option.recording.record_ui_overlay": "Record UI Overlay",
+  "flashback.option.recording.record_ui_overlay.description": "Records transparent GUI overlay frames for exports. This preserves inventory, chest, furnace, chat and other rendered UI, but can make replay files much larger",
+  "flashback.option.recording.ui_overlay_capture_fps": "UI Overlay Capture FPS",
+  "flashback.option.recording.ui_overlay_capture_fps.description": "Maximum UI overlay samples recorded per second. Lower values reduce recording overhead; 60 preserves smooth UI motion for 60 FPS exports",
   "flashback.option.recording.local_player_updates_per_second": "First-person Updates",
   "flashback.option.recording.local_player_updates_per_second.description": "The update rate per second for the position/angle of the first-person player. If you are planning to export your own first-person perspective, you should increase this to the framerate you want to export at",
   "flashback.option.recording.record_voice_chat": "Record Voice Chat",
@@ -79,6 +84,14 @@
   "flashback.disable_third_person_cancel": "Disable third-person cancel",
   "flashback.advanced.synchronize_ticking": "Synchronize Ticking",
   "flashback.advanced.synchronize_ticking.description": "Tick client and integrated server in lockstep. Only works in singleplayer. Useful if recording below 20 TPS. May result in deadlocks",
+  "flashback.advanced.disable_iris_amd_tdr_safe_mode": "Disable AMD/Iris TDR safety mode",
+  "flashback.advanced.disable_iris_amd_tdr_safe_mode.description": "Allows Flashback shader safety gates to be bypassed for debugging. Leave this off unless you are intentionally reproducing driver crashes.",
+  "flashback.advanced.iris_shader_render_isolation": "Iris shader render isolation",
+  "flashback.advanced.iris_shader_render_isolation.description": "When an Iris shaderpack is active, blocks Flashback world-render mutations so Iris owns terrain, projection, depth, and shader state.",
+  "flashback.advanced.log_iris_shader_hooks": "Log Iris shader hook isolation",
+  "flashback.advanced.log_iris_shader_hooks.description": "Logs each Flashback render hook suppressed or allowed while Iris shader render isolation is active.",
+  "flashback.advanced.disable_ui_overlay_capture_with_iris_shaders": "Disable UI overlay capture with Iris shaders",
+  "flashback.advanced.disable_ui_overlay_capture_with_iris_shaders.description": "Disables recorded UI overlay capture while an Iris shaderpack is active. Leave this off unless you are diagnosing driver instability.",
   "flashback.advanced.ignored_custom_packets": "Ignored Custom Payloads",
   "flashback.advanced.ignored_custom_packets.description": "Custom payloads to ignore from mods, primarily useful to workaround problematic mods",
 

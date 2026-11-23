@@ -101,7 +101,6 @@ public class CustomImGuiImplB3D implements CustomImGuiRenderer {
                                             .withColorTargetState(new ColorTargetState(BlendFunction.TRANSLUCENT))
                                             .build();
 
-        this.updateFontsTexture();
     }
 
     @Override
@@ -186,6 +185,26 @@ public class CustomImGuiImplB3D implements CustomImGuiRenderer {
             return null;
         }
 
+        this.renderTarget = FramebufferUtils.resizeOrCreateFramebuffer(this.renderTarget, fbWidth, fbHeight, false);
+        this.renderDrawDataToTargetInternal(drawData, this.renderTarget, fbWidth, fbHeight, true);
+        return this.renderTarget;
+    }
+
+    @Override
+    public void renderDrawDataToTarget(final ImDrawData drawData, RenderTarget target, boolean clearTarget) {
+        int fbWidth = (int)(drawData.getDisplaySizeX() * drawData.getFramebufferScaleX());
+        int fbHeight = (int)(drawData.getDisplaySizeY() * drawData.getFramebufferScaleY());
+
+        if (target == null || fbWidth <= 0 || fbHeight <= 0 || drawData.getCmdListsCount() <= 0) {
+            return;
+        }
+
+        int targetWidth = target.width > 0 ? Math.min(fbWidth, target.width) : fbWidth;
+        int targetHeight = target.height > 0 ? Math.min(fbHeight, target.height) : fbHeight;
+        this.renderDrawDataToTargetInternal(drawData, target, targetWidth, targetHeight, clearTarget);
+    }
+
+    private void renderDrawDataToTargetInternal(final ImDrawData drawData, RenderTarget target, int fbWidth, int fbHeight, boolean clearTarget) {
         var device = RenderSystem.getDevice();
         var encoder = device.createCommandEncoder();
         int drawVertSize = ImDrawData.sizeOfImDrawVert();
@@ -260,15 +279,15 @@ public class CustomImGuiImplB3D implements CustomImGuiRenderer {
 
         this.setupUniforms(drawData, device, encoder);
 
-        this.renderTarget = FramebufferUtils.resizeOrCreateFramebuffer(this.renderTarget, fbWidth, fbHeight, false);
-        Objects.requireNonNull(this.renderTarget.getColorTextureView());
+        Objects.requireNonNull(target.getColorTextureView());
 
         long last = -1;
+        Optional<Vector4fc> clearColor = clearTarget ? Optional.of(CLEAR_COLOUR) : Optional.empty();
 
         try (RenderPass renderPass = encoder.createRenderPass(
             () -> "Flashback ImGui Render Pass",
-            this.renderTarget.getColorTextureView(),
-            Optional.of(CLEAR_COLOUR),
+            target.getColorTextureView(),
+            clearColor,
             null,
             OptionalDouble.empty())
         ) {
@@ -320,7 +339,7 @@ public class CustomImGuiImplB3D implements CustomImGuiRenderer {
                     clipMinY = Math.max(clipMinY, 0);
                     clipMaxY = Math.min(clipMaxY, fbHeight);
 
-                    if (clipMaxX < clipMinX || clipMaxY < clipMinY) {
+                    if (clipMaxX <= clipMinX || clipMaxY <= clipMinY) {
                         continue;
                     }
 
@@ -342,8 +361,38 @@ public class CustomImGuiImplB3D implements CustomImGuiRenderer {
         }
 
         this.cleanupUnusedTextures();
+    }
 
-        return this.renderTarget;
+    @Override
+    public void resetGpuResources() {
+        if (this.fontTexture != null) {
+            this.fontTexture.close();
+            this.fontTexture = null;
+        }
+        if (this.vertexBuffer != null) {
+            this.vertexBuffer.close();
+            this.vertexBuffer = null;
+        }
+        if (this.indexBuffer != null) {
+            this.indexBuffer.close();
+            this.indexBuffer = null;
+        }
+        if (this.uniforms != null) {
+            this.uniforms.close();
+            this.uniforms = null;
+        }
+        if (this.renderTarget != null) {
+            this.renderTarget.destroyBuffers();
+            this.renderTarget = null;
+        }
+
+        this.uniformsHost = null;
+        this.lastUniformFloats = null;
+        this.nextUniformFloats = null;
+        this.viewToIndex.clear();
+        this.indexToView.clear();
+        this.indexGaps.clear();
+        this.nearestTextures.clear();
     }
 
     private void setupUniforms(final ImDrawData drawData, GpuDevice device, CommandEncoder encoder) {

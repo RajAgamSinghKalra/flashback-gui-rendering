@@ -11,6 +11,7 @@ import com.mojang.renderpearl.api.buffers.GpuBuffer;
 import com.mojang.renderpearl.api.commands.RenderPass;
 import com.mojang.renderpearl.api.pipeline.PrimitiveTopology;
 import com.moulberry.flashback.Utils;
+import com.moulberry.flashback.IrisShaderCompatibility;
 import com.moulberry.flashback.combo_options.Sizing;
 import com.moulberry.flashback.editor.ui.windows.TimelineWindow;
 import com.moulberry.flashback.keyframe.change.*;
@@ -43,6 +44,10 @@ public class CameraPath {
 
     public static void renderCameraPath(PoseStack poseStack, CameraRenderState camera, ReplayServer replayServer) {
         RenderSystem.assertOnRenderThread();
+
+        if (!IrisShaderCompatibility.shouldAllowWorldRenderingMutations("camera path world overlay")) {
+            return;
+        }
 
         if (Minecraft.getInstance().gui.hud.isHidden()) {
             return;

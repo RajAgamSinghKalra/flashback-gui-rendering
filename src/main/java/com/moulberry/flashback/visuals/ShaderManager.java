@@ -30,6 +30,19 @@ public class ShaderManager {
                       .build()
     );
 
+    public static final RenderPipeline BLIT_SCREEN_ALPHA = RenderPipelines.register(
+        RenderPipeline.builder()
+                      .withLocation(Identifier.fromNamespaceAndPath("flashback", "pipeline/blit_screen_alpha"))
+                      .withVertexShader("core/screenquad")
+                      .withFragmentShader("core/blit_screen")
+                      .withBindGroupLayout(BindGroupLayouts.IN_SAMPLER)
+                      .withDepthStencilState(Optional.empty())
+                      .withColorTargetState(new ColorTargetState(new BlendFunction(BlendFactor.ONE, BlendFactor.ONE_MINUS_SRC_ALPHA)))
+                      .withCull(false)
+                      .withPrimitiveTopology(PrimitiveTopology.TRIANGLES)
+                      .build()
+    );
+
     public static final RenderPipeline BLIT_SCREEN_WITH_UV = RenderPipelines.register(
         RenderPipeline.builder()
                       .withLocation(Identifier.fromNamespaceAndPath("flashback", "pipeline/blit_screen_with_uv"))

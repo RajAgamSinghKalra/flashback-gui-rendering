@@ -119,6 +119,7 @@ public class ImageFrame implements AutoCloseable {
     public long pixels;
     public final Format format;
     public @Nullable FloatBuffer audioBuffer;
+    public double replayTick;
     private final int customFFmpegPixelFormat;
 
     public int ffmpegPixelFormat() {

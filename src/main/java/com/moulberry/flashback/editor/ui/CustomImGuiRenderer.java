@@ -8,9 +8,11 @@ public interface CustomImGuiRenderer {
 
     void init();
     RenderTarget renderDrawData(final ImDrawData drawData);
+    void renderDrawDataToTarget(final ImDrawData drawData, RenderTarget target, boolean clearTarget);
     long getTextureId(GpuTextureView gpuTextureView);
     void setSampleLinear(long id);
     void setSampleNearest(long id);
     void updateFontsTexture();
+    void resetGpuResources();
 
 }

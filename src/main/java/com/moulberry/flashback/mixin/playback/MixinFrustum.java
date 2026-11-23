@@ -1,6 +1,7 @@
 package com.moulberry.flashback.mixin.playback;
 
 import com.moulberry.flashback.Flashback;
+import com.moulberry.flashback.IrisShaderCompatibility;
 import com.moulberry.flashback.combo_options.ExportProjection;
 import com.moulberry.flashback.exporting.ExportJob;
 import net.minecraft.client.renderer.culling.Frustum;
@@ -15,7 +16,8 @@ public class MixinFrustum {
     @Inject(method = "offsetToFullyIncludeCameraCube", at = @At("HEAD"), cancellable = true)
     public void offsetToFullyIncludeCameraCube(int cubeSize, CallbackInfoReturnable<Frustum> cir) {
         ExportJob exportJob = Flashback.EXPORT_JOB;
-        if (exportJob != null && exportJob.getSettings().projection() == ExportProjection.ORTHOGRAPHIC) {
+        if (exportJob != null && exportJob.getEffectiveProjection() == ExportProjection.ORTHOGRAPHIC &&
+            IrisShaderCompatibility.shouldAllowCameraOverrides("orthographic frustum offset override")) {
             cir.setReturnValue((Frustum) (Object) this);
         }
     }

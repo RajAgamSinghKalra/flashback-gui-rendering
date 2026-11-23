@@ -1,6 +1,7 @@
 package com.moulberry.flashback.visuals;
 
 import com.moulberry.flashback.Flashback;
+import com.moulberry.flashback.IrisShaderCompatibility;
 import com.moulberry.flashback.editor.ui.ReplayUI;
 import com.moulberry.flashback.playback.ReplayServer;
 import com.moulberry.flashback.state.EditorState;
@@ -16,6 +17,10 @@ public class CameraRotation {
     private static float lastShakeReplayTick = 0.0f;
 
     public static Quaternionf modifyViewQuaternion(Quaternionf quaternionf) {
+        if (!IrisShaderCompatibility.shouldAllowCameraOverrides("camera visual roll/shake")) {
+            return quaternionf;
+        }
+
         EditorState editorState = EditorStateManager.getCurrent();
         if (editorState == null) {
             return quaternionf;

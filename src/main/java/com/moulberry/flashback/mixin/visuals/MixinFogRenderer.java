@@ -4,6 +4,7 @@ import com.llamalad7.mixinextras.injector.ModifyReturnValue;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import com.llamalad7.mixinextras.sugar.Local;
+import com.moulberry.flashback.IrisShaderCompatibility;
 import com.moulberry.flashback.state.EditorState;
 import com.moulberry.flashback.state.EditorStateManager;
 import com.moulberry.flashback.visuals.ReplayVisuals;
@@ -22,6 +23,10 @@ public class MixinFogRenderer {
 
     @ModifyReturnValue(method = "setupFog", at = @At("RETURN"))
     public FogData setupFog(FogData fogData) {
+        if (!IrisShaderCompatibility.shouldAllowVisualOverrides("fog override")) {
+            return fogData;
+        }
+
         EditorState editorState = EditorStateManager.getCurrent();
         if (editorState != null) {
             ReplayVisuals visuals = editorState.replayVisuals;

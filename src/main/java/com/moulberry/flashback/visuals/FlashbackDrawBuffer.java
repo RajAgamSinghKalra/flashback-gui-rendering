@@ -1,5 +1,6 @@
 package com.moulberry.flashback.visuals;
 
+import com.moulberry.flashback.IrisShaderCompatibility;
 import com.mojang.blaze3d.pipeline.RenderTarget;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.ByteBufferBuilder;
@@ -58,7 +59,13 @@ public class FlashbackDrawBuffer implements AutoCloseable {
         if (this.vertexBuffer != null) {
             this.vertexBuffer.close();
         }
-        this.vertexBuffer = RenderSystem.getDevice().createBuffer(null, this.usageFlags | GpuBuffer.USAGE_VERTEX, byteBuffer);
+        int uploadBytes = byteBuffer.remaining();
+        this.vertexBuffer = RenderSystem.getDevice().createBuffer(
+            null,
+            (this.usageFlags & ~GpuBuffer.USAGE_MAP_WRITE) | GpuBuffer.USAGE_COPY_DST | GpuBuffer.USAGE_VERTEX,
+            uploadBytes
+        );
+        RenderSystem.getDevice().createCommandEncoder().writeToBuffer(this.vertexBuffer.slice(0, uploadBytes), byteBuffer);
     }
 
     public GpuBuffer getVertexBuffer() {
@@ -75,6 +82,9 @@ public class FlashbackDrawBuffer implements AutoCloseable {
     }
 
     public void draw() {
+        if (!IrisShaderCompatibility.shouldAllowWorldRenderingMutations("Flashback dynamic world draw")) {
+            return;
+        }
         RenderTarget renderTarget = Minecraft.getInstance().gameRenderer.mainRenderTarget();
 
         RenderSystem.AutoStorageIndexBuffer autoStorageIndexBuffer = RenderSystem.getSequentialBuffer(this.vertexFormatMode);

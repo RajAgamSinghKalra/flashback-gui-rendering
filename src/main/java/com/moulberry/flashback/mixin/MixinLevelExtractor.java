@@ -3,12 +3,15 @@ package com.moulberry.flashback.mixin;
 import com.llamalad7.mixinextras.injector.v2.WrapWithCondition;
 import com.moulberry.flashback.Flashback;
 import com.moulberry.flashback.ext.RemotePlayerExt;
+import com.moulberry.flashback.IrisShaderCompatibility;
 import com.moulberry.flashback.state.EditorState;
 import com.moulberry.flashback.state.EditorStateManager;
+import com.moulberry.flashback.visuals.RecordedCameraRenderState;
 import net.minecraft.client.Camera;
 import net.minecraft.client.DeltaTracker;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.client.DeltaTracker;
 import net.minecraft.client.particle.ParticleEngine;
 import net.minecraft.client.player.AbstractClientPlayer;
 import net.minecraft.client.renderer.Lightmap;
@@ -50,8 +53,16 @@ public abstract class MixinLevelExtractor {
     @Final
     private Minecraft minecraft;
 
+    @Inject(method = "extract", at = @At("HEAD"))
+    public void flashback$applyRecordedCameraRenderState(DeltaTracker deltaTracker, Camera camera, float partialTickTime, CallbackInfo ci) {
+        RecordedCameraRenderState.beginEntityExtraction(partialTickTime);
+    }
+
     @Inject(method = "extractBlockDestroyAnimation", at = @At("HEAD"), cancellable = true, require = 0)
     public void renderBlockDestroyAnimation(CallbackInfo ci) {
+        if (!IrisShaderCompatibility.shouldAllowVisualOverrides("block destroy animation filter")) {
+            return;
+        }
         EditorState editorState = EditorStateManager.getCurrent();
         if (editorState != null) {
             if (!editorState.replayVisuals.renderBlocks) {
@@ -138,6 +149,9 @@ public abstract class MixinLevelExtractor {
 
     @WrapWithCondition(method = "extract", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/particle/ParticleEngine;extract(Lnet/minecraft/client/renderer/state/level/ParticlesRenderState;Lnet/minecraft/client/renderer/culling/Frustum;Lnet/minecraft/client/Camera;F)V"))
     public boolean extractLevel_particleEngine_extract(ParticleEngine instance, ParticlesRenderState renderState, Frustum frustum, Camera camera, float partialTickTime) {
+        if (!IrisShaderCompatibility.shouldAllowVisualOverrides("level particle extraction filter")) {
+            return true;
+        }
         EditorState editorState = EditorStateManager.getCurrent();
         if (editorState != null && !editorState.replayVisuals.renderParticles) {
             renderState.reset();

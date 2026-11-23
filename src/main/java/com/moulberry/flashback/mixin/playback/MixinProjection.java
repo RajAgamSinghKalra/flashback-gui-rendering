@@ -1,6 +1,7 @@
 package com.moulberry.flashback.mixin.playback;
 
 import com.mojang.blaze3d.systems.RenderSystem;
+import com.moulberry.flashback.IrisShaderCompatibility;
 import com.moulberry.flashback.ext.ProjectionExt;
 import net.minecraft.client.renderer.Projection;
 import org.joml.Matrix4f;
@@ -38,6 +39,9 @@ public class MixinProjection implements ProjectionExt {
 
     @Override
     public void flashback$setCenteredOrtho(boolean centered) {
+        if (!IrisShaderCompatibility.shouldAllowCameraOverrides("centered orthographic projection state")) {
+            centered = false;
+        }
         if (this.centeredOrtho != centered) {
             this.centeredOrtho = centered;
             this.isMatrixDirty = true;

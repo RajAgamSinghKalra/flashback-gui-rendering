@@ -2,6 +2,7 @@ package com.moulberry.flashback.mixin.visuals;
 
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
+import com.moulberry.flashback.IrisShaderCompatibility;
 import com.moulberry.flashback.Utils;
 import com.moulberry.flashback.state.EditorState;
 import com.moulberry.flashback.state.EditorStateManager;
@@ -33,6 +34,9 @@ public abstract class MixinPlayer extends LivingEntity {
 
     @WrapOperation(method = "getDisplayName", at = @At(value = "INVOKE", target = "Lnet/minecraft/world/scores/PlayerTeam;formatNameForTeam(Lnet/minecraft/world/scores/Team;Lnet/minecraft/network/chat/Component;)Lnet/minecraft/network/chat/MutableComponent;"))
     public MutableComponent getDisplayName_formatNameForTeam(Team team, Component component, Operation<MutableComponent> original) {
+        if (!IrisShaderCompatibility.shouldAllowVisualOverrides("player display name team override")) {
+            return original.call(team, component);
+        }
         EditorState editorState = EditorStateManager.getCurrent();
         if (editorState != null && team instanceof PlayerTeam playerTeam) {
             boolean hidePrefix = editorState.hideTeamPrefix.contains(this.uuid) && !Utils.isComponentEmpty(playerTeam.getPlayerPrefix());

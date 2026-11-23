@@ -1,5 +1,6 @@
 package com.moulberry.flashback.mixin.visuals;
 
+import com.moulberry.flashback.IrisShaderCompatibility;
 import com.moulberry.flashback.state.EditorState;
 import com.moulberry.flashback.state.EditorStateManager;
 import net.minecraft.world.entity.Avatar;
@@ -21,6 +22,9 @@ public abstract class MixinAvatar extends LivingEntity {
 
     @Inject(method = "isModelPartShown", at = @At("HEAD"), cancellable = true)
     public void isModelPartShown(PlayerModelPart playerModelPart, CallbackInfoReturnable<Boolean> cir) {
+        if (!IrisShaderCompatibility.shouldAllowVisualOverrides("avatar model part override")) {
+            return;
+        }
         EditorState editorState = EditorStateManager.getCurrent();
         if (editorState != null) {
             var skinOverride = editorState.skinOverride.get(this.uuid);

@@ -8,6 +8,7 @@ import com.mojang.renderpearl.api.textures.FilterMode;
 import com.mojang.renderpearl.api.textures.GpuTexture;
 import com.mojang.renderpearl.api.textures.GpuTextureView;
 import com.moulberry.flashback.editor.ui.ReplayUI;
+import com.moulberry.flashback.Flashback;
 import com.moulberry.flashback.visuals.ShaderManager;
 import org.jetbrains.annotations.Nullable;
 import org.joml.Vector4f;
@@ -23,6 +24,8 @@ public class SaveableFramebufferQueue implements AutoCloseable {
 
     private final int width;
     private final int height;
+    private int framebuffersCreated;
+    private boolean closed;
 
     private final ArrayDeque<SaveableFramebuffer> available = new ArrayDeque<>();
     private final ArrayDeque<SaveableFramebuffer> waiting = new ArrayDeque<>();
@@ -49,6 +52,7 @@ public class SaveableFramebufferQueue implements AutoCloseable {
 
     public SaveableFramebuffer take() {
         if (this.available.isEmpty()) {
+            this.framebuffersCreated++;
             return new SaveableFramebuffer(this.width, this.height);
         } else {
             return this.available.removeFirst();
@@ -106,9 +110,11 @@ public class SaveableFramebufferQueue implements AutoCloseable {
         }
 
         downloaded.audioBuffer = first.audioBuffer;
+        downloaded.replayTick = first.replayTick;
 
         SaveableFramebuffer popped = this.waiting.removeFirst();
         popped.audioBuffer = null;
+        popped.replayTick = 0.0;
         this.available.add(popped);
 
         return downloaded;
@@ -134,9 +140,11 @@ public class SaveableFramebufferQueue implements AutoCloseable {
             ImageFrame downloaded = Objects.requireNonNull(next.finishDownload());
 
             downloaded.audioBuffer = next.audioBuffer;
+            downloaded.replayTick = next.replayTick;
 
             downloads[i] = downloaded;
             next.audioBuffer = null;
+            next.replayTick = 0.0;
             this.available.add(next);
         }
 
@@ -153,6 +161,9 @@ public class SaveableFramebufferQueue implements AutoCloseable {
 
     @Override
     public void close() {
+        if (this.closed) return;
+        this.closed = true;
+        int framebuffersClosing = this.waiting.size() + this.available.size();
         for (SaveableFramebuffer texture : this.waiting) {
             texture.close();
         }
@@ -161,8 +172,12 @@ public class SaveableFramebufferQueue implements AutoCloseable {
         }
         this.waiting.clear();
         this.available.clear();
+        this.flipBufferView.close();
+        this.flipDepthBufferView.close();
         this.flipBuffer.close();
+        this.flipDepthBuffer.close();
         this.transformDepthUniform.close();
+        Flashback.LOGGER.info("Flashback export GPU resources: readbackBuffersCreated={}, readbackBuffersClosed={}, persistentTexturesClosed=2, textureViewsClosed=2, resolution={}x{}", this.framebuffersCreated, framebuffersClosing, this.width, this.height);
     }
 
 

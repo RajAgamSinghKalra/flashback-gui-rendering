@@ -1,5 +1,6 @@
 package com.moulberry.flashback.mixin.visuals;
 
+import com.moulberry.flashback.IrisShaderCompatibility;
 import com.moulberry.flashback.state.EditorState;
 import com.moulberry.flashback.state.EditorStateManager;
 import net.minecraft.client.particle.Particle;
@@ -22,6 +23,9 @@ public class MixinParticleEngine {
 
     @Inject(method = "createParticle", at = @At("HEAD"), cancellable = true)
     public void createParticle(ParticleOptions particleOptions, double d, double e, double f, double g, double h, double i, CallbackInfoReturnable<Particle> cir) {
+        if (!IrisShaderCompatibility.shouldAllowVisualOverrides("particle creation filter")) {
+            return;
+        }
         EditorState editorState = EditorStateManager.getCurrent();
         if (editorState != null) {
             if (!editorState.replayVisuals.renderParticles) {
@@ -40,6 +44,9 @@ public class MixinParticleEngine {
 
     @Inject(method = "extract", at = @At("HEAD"), cancellable = true)
     public void extract(CallbackInfo ci) {
+        if (!IrisShaderCompatibility.shouldAllowVisualOverrides("particle extract filter")) {
+            return;
+        }
         EditorState editorState = EditorStateManager.getCurrent();
         if (editorState != null && !editorState.replayVisuals.renderParticles) {
             ci.cancel();

@@ -1,5 +1,6 @@
 package com.moulberry.flashback.mixin.visuals;
 
+import com.moulberry.flashback.IrisShaderCompatibility;
 import com.moulberry.flashback.state.EditorState;
 import com.moulberry.flashback.state.EditorStateManager;
 import net.minecraft.client.renderer.blockentity.BeaconRenderer;
@@ -13,6 +14,9 @@ public class MixinBeaconRenderer {
 
     @Inject(method = "shouldRender", at = @At("HEAD"), cancellable = true)
     public void shouldRender(CallbackInfoReturnable<Boolean> cir) {
+        if (!IrisShaderCompatibility.shouldAllowVisualOverrides("beacon beam render filter")) {
+            return;
+        }
         EditorState editorState = EditorStateManager.getCurrent();
         if (editorState != null && !editorState.replayVisuals.renderBeaconBeams) {
             cir.setReturnValue(false);

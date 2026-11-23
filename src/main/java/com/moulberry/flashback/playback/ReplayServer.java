@@ -16,6 +16,8 @@ import com.moulberry.flashback.keyframe.handler.ReplayServerKeyframeHandler;
 import com.moulberry.flashback.keyframe.impl.BlockOverrideKeyframe;
 import com.moulberry.flashback.keyframe.types.BlockOverrideKeyframeType;
 import com.moulberry.flashback.packet.FlashbackAccurateEntityPosition;
+import com.moulberry.flashback.packet.FlashbackCameraModState;
+import com.moulberry.flashback.packet.FlashbackCameraState;
 import com.moulberry.flashback.packet.FlashbackClearEntities;
 import com.moulberry.flashback.packet.FlashbackClearParticles;
 import com.moulberry.flashback.packet.FlashbackForceClientTick;
@@ -187,6 +189,8 @@ public class ReplayServer extends IntegratedServer {
 
     private Component shutdownReason = null;
     private FileSystem playbackFileSystem;
+
+    public FileSystem getPlaybackFileSystem() { return this.playbackFileSystem; }
     private boolean initializedWithSnapshot = false;
 
     private final IgnoredCustomPayloads ignoredCustomPayloads = new IgnoredCustomPayloads();
@@ -718,6 +722,22 @@ public class ReplayServer extends IntegratedServer {
         }
 
         var packet = FlashbackAccurateEntityPosition.STREAM_CODEC.decode(friendlyByteBuf);
+
+        for (ReplayPlayer replayViewer : this.replayViewers) {
+            ServerPlayNetworking.send(replayViewer, packet);
+        }
+    }
+
+    public void handleCameraState(RegistryFriendlyByteBuf friendlyByteBuf) {
+        var packet = FlashbackCameraState.STREAM_CODEC.decode(friendlyByteBuf);
+
+        for (ReplayPlayer replayViewer : this.replayViewers) {
+            ServerPlayNetworking.send(replayViewer, packet);
+        }
+    }
+
+    public void handleCameraModState(RegistryFriendlyByteBuf friendlyByteBuf) {
+        var packet = FlashbackCameraModState.STREAM_CODEC.decode(friendlyByteBuf);
 
         for (ReplayPlayer replayViewer : this.replayViewers) {
             ServerPlayNetworking.send(replayViewer, packet);

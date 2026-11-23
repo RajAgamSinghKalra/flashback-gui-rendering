@@ -4,6 +4,8 @@ import com.mojang.blaze3d.pipeline.RenderTarget;
 import com.mojang.blaze3d.platform.InputConstants;
 import com.mojang.blaze3d.platform.Window;
 import com.moulberry.flashback.Flashback;
+import com.moulberry.flashback.IrisAmdTdrSafeMode;
+import com.moulberry.flashback.IrisShaderCompatibility;
 import com.moulberry.flashback.configuration.FlashbackConfigV1;
 import com.moulberry.flashback.editor.ui.windows.ExportDoneWindow;
 import com.moulberry.flashback.editor.ui.windows.ExportQueueWindow;
@@ -20,6 +22,7 @@ import com.moulberry.flashback.editor.ui.windows.MainMenuBar;
 import com.moulberry.flashback.editor.ui.windows.StartExportWindow;
 import com.moulberry.flashback.editor.ui.windows.TimelineWindow;
 import com.moulberry.flashback.editor.ui.windows.VisualsWindow;
+import com.moulberry.flashback.ui.UiOverlayPreview;
 import imgui.moulberry90.*;
 import imgui.moulberry90.flag.*;
 import imgui.moulberry90.internal.ImGuiContext;
@@ -72,6 +75,7 @@ public class ReplayUI {
     public static int viewportSizeX = 1;
     public static int viewportSizeY = 1;
     private static boolean activeLastFrame = false;
+    private static Boolean shaderSafeModeLastFrame = null;
 
     public static int focusMainWindowCounter = 0;
 
@@ -483,7 +487,7 @@ public class ReplayUI {
 
     public static boolean shouldModifyViewport() {
         EditorState editorState = EditorStateManager.getCurrent();
-        return isActive() && editorState != null && editorState.replayVisuals.sizing != Sizing.UNDERLAY;
+        return isActive() && editorState != null && editorState.replayVisuals.sizing != Sizing.UNDERLAY && !IrisShaderCompatibility.isActive();
     }
 
     private static void transitionActiveState(boolean active) {
@@ -531,7 +535,17 @@ public class ReplayUI {
         long oldImGuiContext = ImGui.getCurrentContext().ptr;
         ImGui.setCurrentContext(imGuiContext);
         try {
-            drawOverlayInternal();
+            boolean shaderSafeMode = IrisShaderCompatibility.isActive();
+            if (shaderSafeModeLastFrame != null && shaderSafeModeLastFrame != shaderSafeMode) {
+                compositeOnTop = null;
+                imguiRenderer.resetGpuResources();
+                imguiRenderer.init();
+                initFonts(languageCode);
+                UiOverlayPreview.close();
+                ((WindowExt)(Object)Minecraft.getInstance().getWindow()).flashback$updateScaledFramebuffer(true);
+            }
+            shaderSafeModeLastFrame = shaderSafeMode;
+            drawOverlayInternal(shaderSafeMode);
         } finally {
             ImGuiContext currentContext = ImGui.getCurrentContext();
             currentContext.ptr = oldImGuiContext;
@@ -539,7 +553,7 @@ public class ReplayUI {
         }
     }
 
-    public static void drawOverlayInternal() {
+    public static void drawOverlayInternal(boolean shaderSafeMode) {
         int oldFrameX = frameX;
         int oldFrameY = frameY;
         int oldFrameWidth = frameWidth;
@@ -647,7 +661,12 @@ public class ReplayUI {
             EditorState editorState = EditorStateManager.getCurrent();
             Sizing sizing = editorState == null ? Sizing.KEEP_ASPECT_RATIO : editorState.replayVisuals.sizing;
 
-            if (sizing == Sizing.KEEP_ASPECT_RATIO || sizing == Sizing.CHANGE_ASPECT_RATIO) {
+            if (shaderSafeMode) {
+                frameX = 0;
+                frameY = 0;
+                frameWidth = Math.max(1, viewportSizeX);
+                frameHeight = Math.max(1, viewportSizeY);
+            } else if (sizing == Sizing.KEEP_ASPECT_RATIO || sizing == Sizing.CHANGE_ASPECT_RATIO) {
                 float aspectRatio;
                 if (sizing == Sizing.KEEP_ASPECT_RATIO) {
                     aspectRatio = ImGui.getMainViewport().getSizeX() / ImGui.getMainViewport().getSizeY();
@@ -706,7 +725,7 @@ public class ReplayUI {
                 ImGuiHelper.popStyleVar();
             }
 
-            if (sizing == Sizing.UNDERLAY) {
+            if (!shaderSafeMode && sizing == Sizing.UNDERLAY) {
                 frameX = 0;
                 frameY = 0;
                 frameWidth = Minecraft.getInstance().getWindow().getScreenWidth();
@@ -915,7 +934,16 @@ public class ReplayUI {
 
         var drawData = ImGui.getDrawData();
         if (drawData != null) {
-            compositeOnTop = imguiRenderer.renderDrawData(drawData);
+            if (shaderSafeMode) {
+                IrisShaderCompatibility.logDirectEditorUi();
+                if (IrisAmdTdrSafeMode.isActive()) {
+                    IrisAmdTdrSafeMode.logDirectEditorOverlay();
+                }
+                imguiRenderer.renderDrawDataToTarget(drawData, Minecraft.getInstance().gameRenderer.mainRenderTarget(), false);
+                compositeOnTop = null;
+            } else {
+                compositeOnTop = imguiRenderer.renderDrawData(drawData);
+            }
         }
 
         if (frameX != oldFrameX || frameY != oldFrameY || frameWidth != oldFrameWidth || frameHeight != oldFrameHeight) {

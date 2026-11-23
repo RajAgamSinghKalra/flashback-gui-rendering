@@ -10,16 +10,27 @@ import org.joml.Vector3d;
 
 import java.util.Set;
 
-public record MinecraftKeyframeHandler(Minecraft minecraft) implements KeyframeHandler {
+public class MinecraftKeyframeHandler implements KeyframeHandler {
 
     private static final Set<Class<? extends KeyframeChange>> supportedChanges = Set.of(
             KeyframeChangeCameraPosition.class, KeyframeChangeCameraPositionOrbit.class, KeyframeChangeTrackEntity.class,
             KeyframeChangeFov.class, KeyframeChangeTimeOfDay.class, KeyframeChangeCameraShake.class
     );
 
+    private final Minecraft minecraft;
+    private boolean appliedCameraPosition = false;
+
+    public MinecraftKeyframeHandler(Minecraft minecraft) {
+        this.minecraft = minecraft;
+    }
+
     @Override
     public Minecraft getMinecraft() {
         return this.minecraft;
+    }
+
+    public boolean hasAppliedCameraPosition() {
+        return this.appliedCameraPosition;
     }
 
     @Override
@@ -29,6 +40,8 @@ public record MinecraftKeyframeHandler(Minecraft minecraft) implements KeyframeH
 
     @Override
     public void applyCameraPosition(Vector3d position, double yaw, double pitch, double roll) {
+        this.appliedCameraPosition = true;
+
         LocalPlayer player = this.minecraft.player;
         if (player != null) {
             if (this.minecraft.getCameraEntity() != this.minecraft.player) {

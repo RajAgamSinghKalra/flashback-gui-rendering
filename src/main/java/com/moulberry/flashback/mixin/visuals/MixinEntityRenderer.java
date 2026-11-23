@@ -2,6 +2,7 @@ package com.moulberry.flashback.mixin.visuals;
 
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
+import com.moulberry.flashback.IrisShaderCompatibility;
 import com.moulberry.flashback.state.EditorState;
 import com.moulberry.flashback.state.EditorStateManager;
 import net.minecraft.client.renderer.entity.EntityRenderer;
@@ -17,6 +18,9 @@ public class MixinEntityRenderer {
 
     @WrapOperation(method = "extractRenderState", at = @At(value = "INVOKE", target = "Lnet/minecraft/world/entity/Entity;isInvisible()Z"))
     public boolean isInvisible(Entity instance, Operation<Boolean> original) {
+        if (!IrisShaderCompatibility.shouldAllowVisualOverrides("entity invisibility override")) {
+            return original.call(instance);
+        }
         EditorState editorState = EditorStateManager.getCurrent();
         if (editorState != null && editorState.isEntityHidden(instance)) {
             return true;
@@ -26,6 +30,9 @@ public class MixinEntityRenderer {
 
     @WrapOperation(method = "extractNameTags(Lnet/minecraft/world/entity/Entity;Lnet/minecraft/client/renderer/entity/state/EntityRenderState;FDD)V", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/renderer/entity/EntityRenderer;shouldShowName(Lnet/minecraft/world/entity/Entity;D)Z"))
     public boolean shouldShowName(EntityRenderer<?, ?> instance, Entity entity, double distance, Operation<Boolean> original) {
+        if (!IrisShaderCompatibility.shouldAllowVisualOverrides("entity nametag render filter")) {
+            return original.call(instance, entity, distance);
+        }
         EditorState editorState = EditorStateManager.getCurrent();
         if (editorState != null) {
             if (!editorState.replayVisuals.renderNametags) {
@@ -41,6 +48,9 @@ public class MixinEntityRenderer {
 
     @Inject(method = "shouldShowName", at = @At("HEAD"), cancellable = true)
     public void shouldShowName(Entity entity, double d, CallbackInfoReturnable<Boolean> cir) {
+        if (!IrisShaderCompatibility.shouldAllowVisualOverrides("entity shouldShowName override")) {
+            return;
+        }
         EditorState editorState = EditorStateManager.getCurrent();
         if (editorState != null) {
             if (!editorState.replayVisuals.renderNametags) {
@@ -55,6 +65,9 @@ public class MixinEntityRenderer {
 
     @Inject(method = "submitNameDisplay(Lnet/minecraft/client/renderer/entity/state/EntityRenderState;Lcom/mojang/blaze3d/vertex/PoseStack;Lnet/minecraft/client/renderer/SubmitNodeCollector;Lnet/minecraft/client/renderer/state/level/CameraRenderState;I)V", at = @At("HEAD"), cancellable = true)
     public void submitNameDisplay(CallbackInfo ci) {
+        if (!IrisShaderCompatibility.shouldAllowVisualOverrides("entity name display submission filter")) {
+            return;
+        }
         EditorState editorState = EditorStateManager.getCurrent();
         if (editorState != null && !editorState.replayVisuals.renderNametags) {
             ci.cancel();

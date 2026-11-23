@@ -3,6 +3,7 @@ package com.moulberry.flashback.mixin.visuals;
 import com.mojang.authlib.GameProfile;
 import com.moulberry.flashback.FilePlayerSkin;
 import com.moulberry.flashback.Flashback;
+import com.moulberry.flashback.IrisShaderCompatibility;
 import com.moulberry.flashback.state.EditorState;
 import com.moulberry.flashback.state.EditorStateManager;
 import net.minecraft.client.Minecraft;
@@ -59,6 +60,9 @@ public abstract class MixinAbstractClientPlayer extends Player {
 
     @Inject(method = "getSkin", at = @At("HEAD"), cancellable = true, require = 0)
     public void getSkin(CallbackInfoReturnable<PlayerSkin> cir) {
+        if (!IrisShaderCompatibility.shouldAllowVisualOverrides("player skin override")) {
+            return;
+        }
         EditorState editorState = EditorStateManager.getCurrent();
         if (editorState != null) {
             FilePlayerSkin filePlayerSkin = editorState.skinOverrideFromFile.get(this.getUUID());

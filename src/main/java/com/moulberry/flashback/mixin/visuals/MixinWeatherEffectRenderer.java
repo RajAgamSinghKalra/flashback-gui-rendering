@@ -2,6 +2,7 @@ package com.moulberry.flashback.mixin.visuals;
 
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
+import com.moulberry.flashback.IrisShaderCompatibility;
 import com.moulberry.flashback.state.EditorState;
 import com.moulberry.flashback.state.EditorStateManager;
 import net.minecraft.client.multiplayer.ClientLevel;
@@ -16,6 +17,9 @@ public class MixinWeatherEffectRenderer {
 
     @WrapOperation(method = "extractRenderState", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/multiplayer/ClientLevel;getPrecipitationAt(Lnet/minecraft/core/BlockPos;)Lnet/minecraft/world/level/biome/Biome$Precipitation;"))
     public Biome.Precipitation getPrecipitationAt(ClientLevel instance, BlockPos pos, Operation<Biome.Precipitation> original) {
+        if (!IrisShaderCompatibility.shouldAllowVisualOverrides("precipitation override")) {
+            return original.call(instance, pos);
+        }
         EditorState editorState = EditorStateManager.getCurrent();
         if (editorState != null) {
             switch (editorState.replayVisuals.overrideWeatherMode) {

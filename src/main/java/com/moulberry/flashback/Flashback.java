@@ -3,6 +3,8 @@ package com.moulberry.flashback;
 import com.google.gson.Gson;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.mojang.renderpearl.api.device.DeviceInfo;
+import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.platform.InputConstants;
 import com.mojang.brigadier.arguments.BoolArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
@@ -23,6 +25,8 @@ import com.moulberry.flashback.ext.MinecraftExt;
 import com.moulberry.flashback.keyframe.KeyframeRegistry;
 import com.moulberry.flashback.keyframe.types.*;
 import com.moulberry.flashback.packet.FlashbackAccurateEntityPosition;
+import com.moulberry.flashback.packet.FlashbackCameraModState;
+import com.moulberry.flashback.packet.FlashbackCameraState;
 import com.moulberry.flashback.packet.FlashbackClearEntities;
 import com.moulberry.flashback.packet.FlashbackClearParticles;
 import com.moulberry.flashback.packet.FinishedServerTick;
@@ -48,6 +52,8 @@ import com.moulberry.flashback.state.EditorState;
 import com.moulberry.flashback.state.EditorStateManager;
 import com.moulberry.flashback.utils.AsyncFileDialogs;
 import com.moulberry.flashback.visuals.AccurateEntityPositionHandler;
+import com.moulberry.flashback.visuals.CameraModStateHandler;
+import com.moulberry.flashback.visuals.CameraStateHandler;
 import com.moulberry.lattice.Lattice;
 import com.moulberry.lattice.element.LatticeElements;
 import com.seibel.distanthorizons.api.DhApi;
@@ -57,6 +63,7 @@ import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommands;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
 import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
+import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keymapping.v1.KeyMappingHelper;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
@@ -158,6 +165,14 @@ public class Flashback implements ModInitializer, ClientModInitializer {
     public static boolean supportsDistantHorizons = false;
 
     public static boolean isBobbyLoaded = false;
+    private static final long IRIS_CONFIG_REFRESH_INTERVAL_NANOS = 1_000_000_000L;
+    private static volatile Boolean irisLoaded = null;
+    private static volatile Boolean irisShadersEnabled = null;
+    private static volatile long nextIrisConfigRefreshNanos = Long.MIN_VALUE;
+    private static boolean loggedIrisAmdSafetyWarning = false;
+    private static boolean loggedIrisConfigReadFailure = false;
+    private static boolean loggedShaderSafeCompositor = false;
+    private static boolean loggedShaderSafeCompositorFailure = false;
 
     private static final List<Path> pendingReplaySave = new ArrayList<>();
     private static final List<Path> pendingReplayRecovery = new ArrayList<>();
@@ -185,6 +200,126 @@ public class Flashback implements ModInitializer, ClientModInitializer {
 
     public static Path getDataDirectory() {
         return FabricLoader.getInstance().getGameDir().resolve("flashback");
+    }
+
+    public static boolean isIrisLoaded() {
+        Boolean cached = irisLoaded;
+        if (cached == null) {
+            cached = FabricLoader.getInstance().isModLoaded("iris");
+            irisLoaded = cached;
+        }
+        return cached;
+    }
+
+    public static boolean shouldBlockUiOverlayCaptureForIris() {
+        return !IrisShaderCompatibility.shouldAllowRecordedUiOverlayCapture("recorded UI overlay capture");
+    }
+
+    public static boolean shouldUseShaderSafeCompositor() {
+        return IrisShaderCompatibility.isActive();
+    }
+
+    public static boolean areIrisShadersEnabled() {
+        if (!isIrisLoaded()) {
+            return false;
+        }
+
+        long now = System.nanoTime();
+        Boolean cached = irisShadersEnabled;
+        if (cached != null && now < nextIrisConfigRefreshNanos) {
+            return cached;
+        }
+
+        synchronized (Flashback.class) {
+            cached = irisShadersEnabled;
+            if (cached != null && now < nextIrisConfigRefreshNanos) {
+                return cached;
+            }
+
+            boolean enabled = "true".equalsIgnoreCase(readIrisProperties().getProperty("enableShaders", "false"));
+            irisShadersEnabled = enabled;
+            nextIrisConfigRefreshNanos = now + IRIS_CONFIG_REFRESH_INTERVAL_NANOS;
+            return enabled;
+        }
+    }
+
+    private static Properties readIrisProperties() {
+        Properties irisProperties = new Properties();
+        Path irisConfig = FabricLoader.getInstance().getConfigDir().resolve("iris.properties");
+        if (!Files.exists(irisConfig)) {
+            return irisProperties;
+        }
+
+        try (var inputStream = Files.newInputStream(irisConfig)) {
+            irisProperties.load(inputStream);
+        } catch (IOException e) {
+            if (!loggedIrisConfigReadFailure) {
+                loggedIrisConfigReadFailure = true;
+                Flashback.LOGGER.warn("Unable to inspect Iris config at {}", irisConfig, e);
+            }
+        }
+        return irisProperties;
+    }
+
+    public static void warnAboutIrisAmdShaderRisk() {
+        if (loggedIrisAmdSafetyWarning || !isIrisLoaded()) {
+            return;
+        }
+        loggedIrisAmdSafetyWarning = true;
+
+        Properties irisProperties = readIrisProperties();
+        String enableShaders = irisProperties.getProperty("enableShaders", "unknown");
+        String shaderPack = irisProperties.getProperty("shaderPack", "<none>");
+        String shadowDistance = irisProperties.getProperty("maxShadowRenderDistance", "unknown");
+
+        if ("true".equalsIgnoreCase(enableShaders)) {
+            Flashback.LOGGER.warn(
+                "Iris is loaded and shaders are currently ENABLED. On AMD OpenGL this can trigger a Windows TDR display-driver reset. " +
+                    "Disable Iris shaders before stability testing. shaderPack='{}', maxShadowRenderDistance={}. Flashback UI overlay capture is disabled for this Iris session. " +
+                    "Flashback terrain render wrappers are disabled while Iris is installed so Iris owns terrain phases, Sodium culling hooks, and tessellation shader setup.",
+                shaderPack, shadowDistance
+            );
+        } else {
+            Flashback.LOGGER.warn(
+                "Iris is loaded with shaders disabled. Flashback UI overlay capture remains enabled in this safe mode and will be blocked automatically if Iris shaders are enabled. " +
+                    "Configured shaderPack='{}', maxShadowRenderDistance={}. Flashback terrain render wrappers are disabled while Iris is installed so Iris owns terrain phases, Sodium culling hooks, and tessellation shader setup.",
+                shaderPack, shadowDistance
+            );
+        }
+    }
+
+    public static void warnAboutShaderSafeCompositor() {
+        if (loggedShaderSafeCompositor || !shouldUseShaderSafeCompositor()) {
+            return;
+        }
+        loggedShaderSafeCompositor = true;
+
+        Properties irisProperties = readIrisProperties();
+        String shaderPack = irisProperties.getProperty("shaderPack", "<none>");
+        String shadowDistance = irisProperties.getProperty("maxShadowRenderDistance", "unknown");
+        String gpuInfo = "unknown";
+        try {
+            DeviceInfo deviceInfo = RenderSystem.getDevice().getDeviceInfo();
+            gpuInfo = deviceInfo.vendorName() + " / " + deviceInfo.name() + " / " + deviceInfo.backendName() + " / " + deviceInfo.driverInfo();
+        } catch (RuntimeException ignored) {
+        }
+
+        Flashback.LOGGER.warn(
+            "Iris shaders are enabled; Flashback is using the shader-safe compositor without transient mapped vertex-buffer uploads. " +
+                "UI overlay capture remains disabled for this shader session. shaderPack='{}', maxShadowRenderDistance={}, gpu='{}'",
+            shaderPack, shadowDistance, gpuInfo
+        );
+    }
+
+    public static void warnAboutShaderSafeCompositorFailure(RuntimeException exception) {
+        if (loggedShaderSafeCompositorFailure) {
+            return;
+        }
+        loggedShaderSafeCompositorFailure = true;
+        Flashback.LOGGER.error(
+            "Flashback shader-safe compositor failed while Iris shaders are enabled; skipping Flashback overlay compositing for this frame instead of crashing the client.",
+            exception
+        );
     }
 
     public static Path getReplayFolder() {
@@ -218,6 +353,8 @@ public class Flashback implements ModInitializer, ClientModInitializer {
         PayloadTypeRegistry.clientboundPlay().register(FlashbackRemoteSetSlot.TYPE, FlashbackRemoteSetSlot.STREAM_CODEC);
         PayloadTypeRegistry.clientboundPlay().register(FlashbackVoiceChatSound.TYPE, FlashbackVoiceChatSound.STREAM_CODEC);
         PayloadTypeRegistry.clientboundPlay().register(FlashbackAccurateEntityPosition.TYPE, FlashbackAccurateEntityPosition.STREAM_CODEC);
+        PayloadTypeRegistry.clientboundPlay().register(FlashbackCameraState.TYPE, FlashbackCameraState.STREAM_CODEC);
+        PayloadTypeRegistry.clientboundPlay().register(FlashbackCameraModState.TYPE, FlashbackCameraModState.STREAM_CODEC);
         PayloadTypeRegistry.clientboundPlay().register(FlashbackSetBorderLerpStartTime.TYPE, FlashbackSetBorderLerpStartTime.STREAM_CODEC);
         PayloadTypeRegistry.clientboundPlay().register(FlashbackRawCustomPayload.TYPE, FlashbackRawCustomPayload.STREAM_CODEC);
     }
@@ -234,6 +371,10 @@ public class Flashback implements ModInitializer, ClientModInitializer {
 
         config = FlashbackConfigV1.tryLoadFromFolder(configFolder);
         configElements = LatticeElements.fromAnnotations(FlashbackTextComponents.FLASHBACK_OPTIONS, config);
+        IrisAmdTdrSafeMode.handlePreviousUncleanShutdown();
+        warnAboutIrisAmdShaderRisk();
+        IrisShaderCompatibility.logStartupDiagnostics();
+        ClientLifecycleEvents.CLIENT_STOPPING.register(client -> IrisAmdTdrSafeMode.markCleanShutdown());
 
         if (config.exporting.useSystemFFmpeg) {
             System.setProperty("org.bytedeco.javacpp.pathsfirst", "true");
@@ -284,6 +425,8 @@ public class Flashback implements ModInitializer, ClientModInitializer {
         ActionRegistry.register(ActionLevelChunkCached.INSTANCE);
         ActionRegistry.register(ActionAccuratePlayerPosition.INSTANCE);
         ActionRegistry.register(ActionRealTimeClock.INSTANCE);
+        ActionRegistry.register(ActionCameraState.INSTANCE);
+        ActionRegistry.register(ActionCameraModState.INSTANCE);
 
         KeyframeRegistry.register(CameraKeyframeType.INSTANCE);
         KeyframeRegistry.register(CameraOrbitKeyframeType.INSTANCE);
@@ -383,6 +526,18 @@ public class Flashback implements ModInitializer, ClientModInitializer {
         ClientPlayNetworking.registerGlobalReceiver(FlashbackAccurateEntityPosition.TYPE, (payload, context) -> {
             if (Flashback.isInReplay()) {
                 AccurateEntityPositionHandler.update(payload);
+            }
+        });
+
+        ClientPlayNetworking.registerGlobalReceiver(FlashbackCameraState.TYPE, (payload, context) -> {
+            if (Flashback.isInReplay()) {
+                CameraStateHandler.update(payload);
+            }
+        });
+
+        ClientPlayNetworking.registerGlobalReceiver(FlashbackCameraModState.TYPE, (payload, context) -> {
+            if (Flashback.isInReplay()) {
+                CameraModStateHandler.update(payload);
             }
         });
 
@@ -534,6 +689,8 @@ public class Flashback implements ModInitializer, ClientModInitializer {
             updateIsInReplay();
 
             AccurateEntityPositionHandler.tick();
+            CameraStateHandler.tick();
+            CameraModStateHandler.tick();
 
             // Fix for camera entity sometimes being incorrect when respawning
             Entity camera = Minecraft.getInstance().getCameraEntity();
@@ -1204,6 +1361,16 @@ public class Flashback implements ModInitializer, ClientModInitializer {
                 // Log any changes to mod list
                 if (metadata.modVersions != null) {
                     ModListHelper.calculateChanges(metadata.modVersions).log();
+                }
+
+                if (metadata.resourcePacks != null) {
+                    var currentPacks = new java.util.ArrayList<>(minecraft.getResourcePackRepository().getSelectedIds());
+                    if (!metadata.resourcePacks.equals(currentPacks)) {
+                        LOGGER.warn("Replay resource pack order differs from recording. Recorded: {}; current: {}. Packs are not bundled or changed automatically.", metadata.resourcePacks, currentPacks);
+                        SystemToast.add(minecraft.gui.toastManager(), FlashbackSystemToasts.RECORDING_TOAST,
+                            Component.literal("Replay resource packs differ"),
+                            Component.literal("Check the log for the recorded pack order."));
+                    }
                 }
 
                 // Mark that editor state was used by this path so it doesn't get automatically cleaned up

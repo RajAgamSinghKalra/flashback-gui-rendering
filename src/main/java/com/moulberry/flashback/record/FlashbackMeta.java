@@ -4,6 +4,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.moulberry.flashback.FlashbackGson;
+import com.moulberry.flashback.ui.UiOverlayManifest;
 import org.jetbrains.annotations.Nullable;
 
 import java.io.File;
@@ -11,6 +12,8 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.Map;
+import java.util.List;
+import java.util.ArrayList;
 import java.util.TreeMap;
 import java.util.UUID;
 
@@ -31,8 +34,12 @@ public class FlashbackMeta {
 
     public LinkedHashMap<String, LinkedHashSet<String>> namespacesForRegistries = null;
     public LinkedHashMap<String, String> modVersions = null;
+    // Ordered client resource packs; absent in recordings made before this field existed.
+    public List<String> resourcePacks = null;
 
     public Map<String, File> distantHorizonPaths = new HashMap<>();
+
+    public UiOverlayManifest.Metadata uiOverlay = null;
 
     public JsonObject toJson() {
         JsonObject meta = new JsonObject();
@@ -53,6 +60,16 @@ public class FlashbackMeta {
         }
         if (this.bobbyWorldName != null) {
             meta.addProperty("bobby_world_name", this.bobbyWorldName);
+        }
+
+        if (this.uiOverlay != null) {
+            meta.add("uiOverlay", this.uiOverlay.toJson());
+        }
+
+        if (this.resourcePacks != null) {
+            JsonArray packs = new JsonArray();
+            for (String pack : this.resourcePacks) packs.add(pack);
+            meta.add("resourcePacks", packs);
         }
 
         if (this.totalTicks > 0) {
@@ -143,6 +160,21 @@ public class FlashbackMeta {
         }
         if (meta.has("bobby_world_name")) {
             flashbackMeta.bobbyWorldName = meta.get("bobby_world_name").getAsString();
+        }
+        if (meta.has("uiOverlay") && meta.get("uiOverlay").isJsonObject()) {
+            flashbackMeta.uiOverlay = UiOverlayManifest.Metadata.fromJson(meta.getAsJsonObject("uiOverlay"));
+        }
+
+        if (meta.has("resourcePacks") && meta.get("resourcePacks").isJsonArray()) {
+            List<String> packs = new ArrayList<>();
+            for (JsonElement element : meta.getAsJsonArray("resourcePacks")) {
+                if (!element.isJsonPrimitive() || !element.getAsJsonPrimitive().isString() || packs.size() >= 1024) {
+                    packs = null;
+                    break;
+                }
+                packs.add(element.getAsString());
+            }
+            flashbackMeta.resourcePacks = packs;
         }
 
         // Total ticks

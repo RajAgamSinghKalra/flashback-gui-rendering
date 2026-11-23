@@ -3,6 +3,7 @@ package com.moulberry.flashback.mixin.playback;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import com.moulberry.flashback.Flashback;
+import com.moulberry.flashback.IrisShaderCompatibility;
 import com.moulberry.flashback.playback.ReplayServer;
 import com.moulberry.flashback.state.EditorState;
 import com.moulberry.flashback.state.EditorStateManager;
@@ -44,6 +45,9 @@ public abstract class MixinEntity {
 
     @Inject(method = "isInvisibleTo", at = @At("HEAD"), cancellable = true)
     public void isInvisibleTo(Player player, CallbackInfoReturnable<Boolean> cir) {
+        if (!IrisShaderCompatibility.shouldAllowVisualOverrides("entity invisibility playback override")) {
+            return;
+        }
         ReplayServer replayServer = Flashback.getReplayServer();
         if (replayServer != null && player == Minecraft.getInstance().player) {
             EditorState editorState = EditorStateManager.getCurrent();

@@ -17,6 +17,9 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 @Mixin(Window.class)
 public abstract class MixinWindow implements WindowExt {
 
+    @Unique
+    private static final int FLASHBACK_MAX_FRAMEBUFFER_DIMENSION = 16384;
+
     @Shadow private int framebufferWidth;
     @Shadow private int framebufferHeight;
 
@@ -61,22 +64,46 @@ public abstract class MixinWindow implements WindowExt {
     @Unique
     private int overrideFramebufferHeight = -1;
 
+    @Unique
+    private int flashback$clampWidth(int width, int height) {
+        if (width <= FLASHBACK_MAX_FRAMEBUFFER_DIMENSION && height <= FLASHBACK_MAX_FRAMEBUFFER_DIMENSION) {
+            return width;
+        }
+
+        double scale = Math.min((double) FLASHBACK_MAX_FRAMEBUFFER_DIMENSION / width, (double) FLASHBACK_MAX_FRAMEBUFFER_DIMENSION / height);
+        return Math.max(1, (int) Math.floor(width * scale));
+    }
+
+    @Unique
+    private int flashback$clampHeight(int width, int height) {
+        if (width <= FLASHBACK_MAX_FRAMEBUFFER_DIMENSION && height <= FLASHBACK_MAX_FRAMEBUFFER_DIMENSION) {
+            return height;
+        }
+
+        double scale = Math.min((double) FLASHBACK_MAX_FRAMEBUFFER_DIMENSION / width, (double) FLASHBACK_MAX_FRAMEBUFFER_DIMENSION / height);
+        return Math.max(1, (int) Math.floor(height * scale));
+    }
+
     @Override
     public void flashback$updateScaledFramebuffer(boolean callFramebufferSizeChanged) {
         int lastWidth = this.overrideFramebufferWidth;
         int lastHeight = this.overrideFramebufferHeight;
         if (Flashback.EXPORT_JOB != null && Flashback.EXPORT_JOB.shouldChangeFramebufferSize()) {
-            this.overrideFramebufferWidth = Flashback.EXPORT_JOB.getWidth();
-            this.overrideFramebufferHeight = Flashback.EXPORT_JOB.getHeight();
+            int width = Flashback.EXPORT_JOB.getWidth();
+            int height = Flashback.EXPORT_JOB.getHeight();
+            this.overrideFramebufferWidth = this.flashback$clampWidth(width, height);
+            this.overrideFramebufferHeight = this.flashback$clampHeight(width, height);
         } else if (ReplayUI.shouldModifyViewport()) {
-            this.overrideFramebufferWidth = ReplayUI.getNewGameWidth(this.calculateWidthScaleFactor());
-            this.overrideFramebufferHeight = ReplayUI.getNewGameHeight(this.calculateHeightScaleFactor());
+            int width = ReplayUI.getNewGameWidth(this.calculateWidthScaleFactor());
+            int height = ReplayUI.getNewGameHeight(this.calculateHeightScaleFactor());
+            this.overrideFramebufferWidth = this.flashback$clampWidth(width, height);
+            this.overrideFramebufferHeight = this.flashback$clampHeight(width, height);
         } else {
             this.overrideFramebufferWidth = -1;
             this.overrideFramebufferHeight = -1;
         }
 
-        if (callFramebufferSizeChanged && lastWidth != this.overrideFramebufferWidth && lastHeight != this.overrideFramebufferHeight) {
+        if (callFramebufferSizeChanged && (lastWidth != this.overrideFramebufferWidth || lastHeight != this.overrideFramebufferHeight)) {
             this.eventHandler.framebufferSizeChanged();
         }
     }
@@ -86,6 +113,8 @@ public abstract class MixinWindow implements WindowExt {
         int width = this.overrideFramebufferWidth;
         if (width != -1) {
             cir.setReturnValue(width);
+        } else if (this.framebufferWidth > FLASHBACK_MAX_FRAMEBUFFER_DIMENSION || this.framebufferHeight > FLASHBACK_MAX_FRAMEBUFFER_DIMENSION) {
+            cir.setReturnValue(this.flashback$clampWidth(this.framebufferWidth, this.framebufferHeight));
         }
     }
 
@@ -94,6 +123,8 @@ public abstract class MixinWindow implements WindowExt {
         int height = this.overrideFramebufferHeight;
         if (height != -1) {
             cir.setReturnValue(height);
+        } else if (this.framebufferWidth > FLASHBACK_MAX_FRAMEBUFFER_DIMENSION || this.framebufferHeight > FLASHBACK_MAX_FRAMEBUFFER_DIMENSION) {
+            cir.setReturnValue(this.flashback$clampHeight(this.framebufferWidth, this.framebufferHeight));
         }
     }
 

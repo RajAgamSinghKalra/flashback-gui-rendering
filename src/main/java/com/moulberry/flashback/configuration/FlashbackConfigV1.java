@@ -46,7 +46,7 @@ import java.util.Set;
 
 public class FlashbackConfigV1 {
 
-    private static final int CURRENT_CONFIG_VERSION = 2;
+    private static final int CURRENT_CONFIG_VERSION = 3;
 
     private FlashbackConfigV1() {
     }
@@ -90,6 +90,16 @@ public class FlashbackConfigV1 {
         @LatticeOption(title = "flashback.option.recording.record_hotbar", description = "!!.description")
         @LatticeWidgetButton
         public boolean recordHotbar = false;
+
+        @LatticeOption(title = "flashback.option.recording.record_ui_overlay", description = "!!.description")
+        @LatticeWidgetButton
+        public boolean recordUiOverlay = true;
+
+        @LatticeOption(title = "flashback.option.recording.ui_overlay_capture_fps", description = "!!.description")
+        @LatticeFormatValues(formattingString = "flashback.option.fps", translate = true)
+        @LatticeIntRange(min = 1, max = 60, step = 1, clampMin = 1, clampMax = 60, clampStep = 1)
+        @LatticeWidgetSlider
+        public int uiOverlayCaptureFps = 60;
 
         @LatticeOption(title = "flashback.option.recording.local_player_updates_per_second", description = "!!.description")
         @LatticeFormatValues(formattingString = "flashback.option.per_second", translate = true)
@@ -285,6 +295,22 @@ public class FlashbackConfigV1 {
         @LatticeWidgetButton
         public boolean synchronizeTicking = false;
 
+        @LatticeOption(title = "flashback.advanced.disable_iris_amd_tdr_safe_mode", description = "!!.description")
+        @LatticeWidgetButton
+        public boolean disableIrisAmdTdrSafeMode = false;
+
+        @LatticeOption(title = "flashback.advanced.iris_shader_render_isolation", description = "!!.description")
+        @LatticeWidgetButton
+        public boolean irisShaderRenderIsolation = true;
+
+        @LatticeOption(title = "flashback.advanced.log_iris_shader_hooks", description = "!!.description")
+        @LatticeWidgetButton
+        public boolean logIrisShaderHooks = true;
+
+        @LatticeOption(title = "flashback.advanced.disable_ui_overlay_capture_with_iris_shaders", description = "!!.description")
+        @LatticeWidgetButton
+        public boolean disableUiOverlayCaptureWithIrisShaders = false;
+
         @LatticeOption(title = "flashback.advanced.ignored_custom_packets", description = "!!.description")
         @LatticeWidgetTextArea
         public String ignoredCustomPayloads = "";
@@ -340,6 +366,7 @@ public class FlashbackConfigV1 {
     public ForceDefaultExportSettings forceDefaultExportSettings = new ForceDefaultExportSettings();
 
     private transient int saveDelay = 0;
+    private transient boolean migratedOnLoad = false;
 
     public static FlashbackConfigV1 tryLoadFromFolder(Path configFolder) {
         Path primary = configFolder.resolve("flashback.json");
@@ -347,7 +374,10 @@ public class FlashbackConfigV1 {
 
         if (Files.exists(primary)) {
             try {
-                return load(primary);
+                FlashbackConfigV1 config = load(primary);
+                config.saveIfMigrated(configFolder);
+                config.logLoadedUiOverlayConfig();
+                return config;
             } catch (Exception e) {
                 Flashback.LOGGER.error("Failed to load config from {}", primary, e);
             }
@@ -355,13 +385,37 @@ public class FlashbackConfigV1 {
 
         if (Files.exists(backup)) {
             try {
-                return load(backup);
+                FlashbackConfigV1 config = load(backup);
+                config.saveIfMigrated(configFolder);
+                config.logLoadedUiOverlayConfig();
+                return config;
             } catch (Exception e) {
                 Flashback.LOGGER.error("Failed to load config from {}", backup, e);
             }
         }
 
-        return new FlashbackConfigV1();
+        FlashbackConfigV1 config = new FlashbackConfigV1();
+        config.logLoadedUiOverlayConfig();
+        return config;
+    }
+
+    private void saveIfMigrated(Path configFolder) {
+        if (!this.migratedOnLoad) {
+            return;
+        }
+
+        Flashback.LOGGER.info("Saving migrated Flashback config version {}", CURRENT_CONFIG_VERSION);
+        this.saveToFolder(configFolder);
+        this.migratedOnLoad = false;
+    }
+
+    private void logLoadedUiOverlayConfig() {
+        Flashback.LOGGER.info(
+            "Loaded Flashback UI overlay config: recordUiOverlay={}, uiOverlayCaptureFps={}, disableUiOverlayCaptureWithIrisShaders={}",
+            this.recording.recordUiOverlay,
+            this.recording.uiOverlayCaptureFps,
+            this.advanced.disableUiOverlayCaptureWithIrisShaders
+        );
     }
 
     public void delayedSaveToDefaultFolder() {
@@ -420,17 +474,56 @@ public class FlashbackConfigV1 {
 
                 FlashbackConfigV1 config = FlashbackGson.PRETTY.fromJson(serialized, FlashbackConfigV1.class);
                 legacyConfig.migrateTo(config);
-                config.configVersion = CURRENT_CONFIG_VERSION;
+                config.migrateLoadedConfig(0);
                 return config;
             } else {
                 int configVersion = jsonObject.get("configVersion").getAsInt();
-                // Handle any other config migrations here
+                FlashbackConfigV1 config = FlashbackGson.PRETTY.fromJson(serialized, FlashbackConfigV1.class);
+                config.migrateLoadedConfig(configVersion);
+                return config;
             }
         } catch (Exception ignored) {}
 
         FlashbackConfigV1 config = FlashbackGson.PRETTY.fromJson(serialized, FlashbackConfigV1.class);
-        config.configVersion = CURRENT_CONFIG_VERSION;
+        config.migrateLoadedConfig(config.configVersion);
         return config;
+    }
+
+    private void migrateLoadedConfig(int loadedVersion) {
+        boolean changed = false;
+
+        if (this.recordingControls == null) {
+            this.recordingControls = new SubcategoryRecordingControls();
+            changed = true;
+        }
+        if (this.recording == null) {
+            this.recording = new SubcategoryRecording();
+            changed = true;
+        }
+        if (this.advanced == null) {
+            this.advanced = new SubcategoryAdvanced();
+            changed = true;
+        }
+
+        if (loadedVersion < 3 && !this.advanced.disableUiOverlayCaptureWithIrisShaders) {
+            if (!this.recording.recordUiOverlay) {
+                Flashback.LOGGER.warn("Enabling Flashback UI overlay recording during config migration; old recordings made with recordUiOverlay=false cannot show recorded inventory/chat/container UI");
+                this.recording.recordUiOverlay = true;
+                changed = true;
+            }
+
+            if (this.recording.uiOverlayCaptureFps != 60) {
+                this.recording.uiOverlayCaptureFps = 60;
+                changed = true;
+            }
+        }
+
+        if (this.configVersion != CURRENT_CONFIG_VERSION) {
+            this.configVersion = CURRENT_CONFIG_VERSION;
+            changed = true;
+        }
+
+        this.migratedOnLoad = changed;
     }
 
     private void save(Path path) {

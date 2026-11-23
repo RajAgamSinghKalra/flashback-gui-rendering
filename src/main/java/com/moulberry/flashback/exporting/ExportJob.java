@@ -30,10 +30,13 @@ import com.moulberry.flashback.playback.ReplayServer;
 import com.moulberry.flashback.utils.FramebufferUtils;
 import com.moulberry.flashback.utils.InputHelper;
 import com.moulberry.flashback.utils.WindowSizeTracker;
+import com.moulberry.flashback.ui.UiOverlayPlayback;
 import com.moulberry.flashback.visuals.AccurateEntityPositionHandler;
+import com.moulberry.flashback.visuals.CameraStateHandler;
 import com.moulberry.flashback.visuals.FlashbackDrawBuffer;
 import imgui.moulberry90.flag.ImGuiKey;
 import imgui.moulberry90.flag.ImGuiMouseButton;
+import com.moulberry.flashback.visuals.RecordedCameraRenderState;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.gui.font.TextRenderable;
 import net.minecraft.client.renderer.Projection;
@@ -74,6 +77,14 @@ import java.util.concurrent.locks.LockSupport;
 
 public class ExportJob {
 
+    // Extra warm-up renders reuse the same replay timestamp; they must not advance
+    // stateful resource-pack animations once per synthetic frame.
+    private boolean entityAnimationWarmupFrame;
+
+    public boolean isEntityAnimationWarmupFrame() {
+        return this.entityAnimationWarmupFrame;
+    }
+
     private static final Vector4f EMPTY_CLEAR_COLOUR = new Vector4f(0);
 
     private final ExportSettings settings;
@@ -97,9 +108,22 @@ public class ExportJob {
     private boolean patreonLinkClicked = false;
 
     private int extraDummyFrames = 0;
+    private boolean conservativeShaderExport = false;
+    private long cameraPrimeChecks;
+    private long cameraPrimeMissing;
+    private long cameraPrimeNoStream;
+    private long cameraPrimeRecovered;
+    private long lastCameraPrimeWarningNanos;
+    private int lastWaitedCameraTick = Integer.MIN_VALUE;
 
     public int progressCount = 0;
     public int progressOutOf = 0;
+    private int progressFrame = 0;
+    private int progressTotalFrames = 0;
+    private long lastProgressSampleMillis = -1;
+    private int lastProgressSampleFrame = 0;
+    private double rollingMillisPerFrame = -1.0;
+    private String progressPhase = "Preparing";
 
     private double currentTickDouble = 0.0;
 
@@ -109,6 +133,10 @@ public class ExportJob {
 
     private NativeImage firstFrame = null;
     private int writtenFrames = 0;
+    private UiOverlayPlayback uiOverlayPlayback = null;
+    private RenderTarget lastExportPreviewFramebuffer = null;
+    private boolean exportPreviewDisabled = false;
+    private boolean exportPreviewMinimizedLogged = false;
 
     public Runnable saveDepthAfterLevel = null;
 
@@ -132,12 +160,12 @@ public class ExportJob {
     public int getWidth() {
         int resolutionX = this.settings.resolutionX();
 
-        ExportProjection projection = this.settings.projection();
+        ExportProjection projection = this.getEffectiveProjection();
         if (projection == ExportProjection.CUBE_MAP) {
             resolutionX = (resolutionX + 3)/4;
         }
 
-        if (this.settings.ssaa()) {
+        if (this.useSsaa()) {
             resolutionX *= 2;
         }
 
@@ -147,12 +175,12 @@ public class ExportJob {
     public int getHeight() {
         int resolutionY = this.settings.resolutionY();
 
-        ExportProjection projection = this.settings.projection();
+        ExportProjection projection = this.getEffectiveProjection();
         if (projection == ExportProjection.CUBE_MAP) {
             resolutionY = (resolutionY + 2)/3;
         }
 
-        if (this.settings.ssaa()) {
+        if (this.useSsaa()) {
             resolutionY *= 2;
         }
 
@@ -182,12 +210,26 @@ public class ExportJob {
 
     private record TempFileInfo(String name, Path file, Path folder) {}
 
+    public ExportProjection getEffectiveProjection() {
+        if (this.conservativeShaderExport) {
+            return IrisShaderCompatibility.effectiveExportProjection(this.settings.projection());
+        }
+        return this.settings.projection();
+    }
+
     public void run() {
         ReplayServer replayServer = Flashback.getReplayServer();
         if (this.running || replayServer == null) {
             throw new IllegalStateException("run() called twice");
         }
         this.running = true;
+        this.conservativeShaderExport = IrisShaderCompatibility.isActive();
+        if (this.conservativeShaderExport) {
+            IrisShaderCompatibility.logConservativeExport(this.settings.projection());
+            if (IrisAmdTdrSafeMode.isActive()) {
+                IrisAmdTdrSafeMode.logExportConservativeMode();
+            }
+        }
         Minecraft.getInstance().mouseHandler.releaseMouse();
         Minecraft.getInstance().getSoundManager().stop();
         Minecraft.getInstance().getSoundManager().tick(true);
@@ -207,7 +249,7 @@ public class ExportJob {
 
         int oldGuiScale = Minecraft.getInstance().options.guiScale().get();
 
-        this.extraDummyFrames = Flashback.getConfig().exporting.exportRenderDummyFrames;
+        this.extraDummyFrames = this.conservativeShaderExport ? 0 : Flashback.getConfig().exporting.exportRenderDummyFrames;
 
         try {
             if (tempFileInfo != null) {
@@ -217,8 +259,9 @@ public class ExportJob {
             int resolutionX = this.settings.resolutionX();
             int resolutionY = this.settings.resolutionY();
 
-            if (this.settings.projection() == ExportProjection.CUBE_MAP || this.settings.projection() == ExportProjection.EQUIRECTANGULAR) {
-                if (this.settings.projection() == ExportProjection.CUBE_MAP) {
+            ExportProjection initialProjection = this.getEffectiveProjection();
+            if (initialProjection == ExportProjection.CUBE_MAP || initialProjection == ExportProjection.EQUIRECTANGULAR) {
+                if (initialProjection == ExportProjection.CUBE_MAP) {
                     resolutionX = (resolutionX + 3)/4;
                     resolutionY = (resolutionY + 2)/3;
                 }
@@ -260,9 +303,12 @@ public class ExportJob {
             throw new RuntimeException(e);
         } finally {
             this.running = false;
+            Flashback.LOGGER.info("Flashback export camera diagnostics: checks={}, missing={}, recoveredAfterWait={}, noStream={}; missing samples cannot be reconstructed", this.cameraPrimeChecks, this.cameraPrimeMissing, this.cameraPrimeRecovered, this.cameraPrimeNoStream);
+            CameraStateHandler.setExportCameraKeyframed(false);
             this.shouldChangeFramebufferSize = false;
 
-            if (this.settings.projection() == ExportProjection.CUBE_MAP || this.settings.projection() == ExportProjection.EQUIRECTANGULAR) {
+            ExportProjection finalProjection = this.getEffectiveProjection();
+            if (finalProjection == ExportProjection.CUBE_MAP || finalProjection == ExportProjection.EQUIRECTANGULAR) {
                 Minecraft.getInstance().gameRenderer.mainCamera().disablePanoramicMode();
             }
 
@@ -284,6 +330,10 @@ public class ExportJob {
             if (this.firstFrame != null) {
                 this.firstFrame.close();
                 this.firstFrame = null;
+            }
+            if (this.uiOverlayPlayback != null) {
+                this.uiOverlayPlayback.close();
+                this.uiOverlayPlayback = null;
             }
 
             if (tempFileInfo != null) {
@@ -344,10 +394,11 @@ public class ExportJob {
 
         this.setup(replayServer);
         this.updateRandoms(random, mathRandom);
+        this.uiOverlayPlayback = this.settings.noGui() ? null : UiOverlayPlayback.fromReplay(replayServer);
 
         shouldChangeFramebufferSize = true;
         // Double gui scale if using SSAA which doubles resolution
-        if (this.settings.ssaa()) {
+        if (this.useSsaa()) {
             mc.options.guiScale().set(mc.options.guiScale().get() * 2);
         }
         ((WindowExt)(Object)Minecraft.getInstance().getWindow()).flashback$updateScaledFramebuffer(true);
@@ -357,6 +408,7 @@ public class ExportJob {
         int clientTickCount = 0;
 
         this.renderStartTime = System.currentTimeMillis();
+        this.initializeProgress(ticks.size());
 
         double lastClientTickDouble = 0;
 
@@ -373,6 +425,9 @@ public class ExportJob {
             // Wait until server is on correct replay tick
             long start = System.nanoTime();
             this.setServerTickAndWait(replayServer, targetServerTick, false);
+            // CameraStateHandler selects poses using the replay timeline, which can
+            // diverge from client time when a replay is slowed, sped up or frozen.
+            this.primeClientCameraPackets(this.settings.startTick() + currentTickDouble);
             serverTickTimeNanos += System.nanoTime() - start;
 
             // Tick client
@@ -404,8 +459,9 @@ public class ExportJob {
                 FlashbackAudioManager.startHandling();
             }
             try {
-                KeyframeHandler keyframeHandler = new MinecraftKeyframeHandler(mc);
+                MinecraftKeyframeHandler keyframeHandler = new MinecraftKeyframeHandler(mc);
                 this.settings.editorState().applyKeyframes(keyframeHandler, (float)(this.settings.startTick() + currentTickDouble));
+                CameraStateHandler.setExportCameraKeyframed(keyframeHandler.hasAppliedCameraPosition());
             } finally {
                 if (!frozen) {
                     FlashbackAudioManager.finishHandling();
@@ -427,7 +483,12 @@ public class ExportJob {
                 }
 
                 RenderTarget renderTarget = mc.gameRenderer.mainRenderTarget();
-                render(renderTarget, mc.deltaTracker);
+                this.entityAnimationWarmupFrame = true;
+                try {
+                    render(renderTarget, mc.deltaTracker);
+                } finally {
+                    this.entityAnimationWarmupFrame = false;
+                }
 
                 if (overlayOrScreen) {
                     finishFrame(renderTarget, new ArrayList<>(List.of("Waiting for overlay to disappear")), true, false);
@@ -465,7 +526,7 @@ public class ExportJob {
 
             RenderTarget renderTarget = Minecraft.getInstance().gameRenderer.mainRenderTarget();
 
-            ExportProjection projection = this.settings.projection();
+            ExportProjection projection = this.getEffectiveProjection();
 
             if (projection == ExportProjection.CUBE_MAP || projection == ExportProjection.EQUIRECTANGULAR) {
                 var player = mc.player;
@@ -516,6 +577,7 @@ public class ExportJob {
                     if (this.settings.depthMap()) {
                         this.tryDepthDownload();
                     } else {
+                        saveable.replayTick = this.settings.startTick() + this.currentTickDouble;
                         downloader.startDownload(renderTarget, saveable, this.settings.ssaa());
                     }
                 }
@@ -553,14 +615,21 @@ public class ExportJob {
                 if (this.settings.depthMap()) {
                     this.tryDepthDownload();
                 } else {
-                    downloader.startDownload(renderTarget, saveable, this.settings.ssaa());
+                    saveable.replayTick = this.settings.startTick() + this.currentTickDouble;
+                        downloader.startDownload(renderTarget, saveable, this.settings.ssaa());
                 }
             }
 
-            submitDownloadedFrames(videoWriter, downloader, false);
+            this.lastExportPreviewFramebuffer = renderTarget;
+
+            if (this.conservativeShaderExport && projection != ExportProjection.CUBE_MAP && projection != ExportProjection.EQUIRECTANGULAR) {
+                submitDownloadedFrames(videoWriter, downloader, true, false);
+            } else {
+                submitDownloadedFrames(videoWriter, downloader, false, false);
+            }
 
             this.shouldChangeFramebufferSize = false;
-            boolean cancel = finishFrameNormal(renderTarget, tickIndex, ticks.size());
+            boolean cancel = finishFrameNormal(renderTarget, tickIndex + 1, ticks.size());
             this.shouldChangeFramebufferSize = true;
 
             if (cancel) {
@@ -569,12 +638,10 @@ public class ExportJob {
             }
         }
 
-        submitDownloadedFrames(videoWriter, downloader, true);
+        submitDownloadedFrames(videoWriter, downloader, true, true);
 
-        long finishStart = System.currentTimeMillis();
         videoWriter.finish(info -> {
-            long time = System.currentTimeMillis() - finishStart;
-            String progress = "Finalizing video (" + info + ")... " + time/1000 + "s";
+            String progress = "Finalizing video (" + info + ")";
             finishFrameFinal(Minecraft.getInstance().gameRenderer.mainRenderTarget(), progress, false);
         });
     }
@@ -598,6 +665,25 @@ public class ExportJob {
 
         FramebufferUtils.clear(renderTarget, EMPTY_CLEAR_COLOUR);
         minecraft.gameRenderer.render();
+    }
+
+    private static void closeDynamicFrameBeforeSubmit() {
+        RenderSystem.getDynamicUniforms().reset();
+        Minecraft.getInstance().levelRenderer.endFrame();
+    }
+
+    private void disableExportPreview(String reason) {
+        if (!this.exportPreviewDisabled) {
+            Flashback.LOGGER.warn("Flashback export preview disabled for the rest of this export: {}", reason);
+        }
+        this.exportPreviewDisabled = true;
+    }
+
+    private void disableExportPreview(String reason, Exception exception) {
+        if (!this.exportPreviewDisabled) {
+            Flashback.LOGGER.warn("Flashback export preview disabled for the rest of this export: {}", reason, exception);
+        }
+        this.exportPreviewDisabled = true;
     }
 
     private void updateRandoms(Random random, Random mathRandom) {
@@ -675,11 +761,14 @@ public class ExportJob {
                 player.getInterpolation().cancel();
                 player.setDeltaMovement(Vec3.ZERO);
             }
-            this.settings.editorState().applyKeyframes(new MinecraftKeyframeHandler(Minecraft.getInstance()), this.settings.startTick());
+            MinecraftKeyframeHandler keyframeHandler = new MinecraftKeyframeHandler(Minecraft.getInstance());
+            this.settings.editorState().applyKeyframes(keyframeHandler, this.settings.startTick());
+            CameraStateHandler.setExportCameraKeyframed(keyframeHandler.hasAppliedCameraPosition());
             this.runClientTick(false);
 
             // Ensured replay server is paused at startTick
             this.setServerTickAndWait(replayServer, this.settings.startTick(), true);
+            this.primeClientCameraPackets(this.settings.startTick());
             this.runClientTick(false);
         }
 
@@ -698,6 +787,40 @@ public class ExportJob {
             while (!this.finishedServerTick.compareAndExchange(true, false)) {
                 LockSupport.parkNanos("waiting for server thread", 100000L);
             }
+        }
+    }
+
+    private void primeClientCameraPackets(double absoluteReplayTick) {
+        Minecraft minecraft = Minecraft.getInstance();
+        this.cameraPrimeChecks++;
+        int targetTick = (int) Math.floor(absoluteReplayTick);
+        boolean canWait = targetTick != this.lastWaitedCameraTick;
+        long deadline = System.nanoTime() + (canWait ? 5_000_000L : 0L);
+        if (canWait) this.lastWaitedCameraTick = targetTick;
+        int attempts = 0;
+        do {
+            minecraft.packetProcessor().processQueuedPackets();
+            minecraft.runAllTasks();
+            if (RecordedCameraRenderState.hasRecordedCameraSampleNear(absoluteReplayTick, 1.0)) {
+                if (attempts > 0) this.cameraPrimeRecovered++;
+                return;
+            }
+            if (!CameraStateHandler.hasReceivedCameraState()) {
+                break;
+            }
+            attempts++;
+            if (System.nanoTime() < deadline) LockSupport.parkNanos("waiting for replay camera packets", 500_000L);
+        } while (System.nanoTime() < deadline);
+
+        this.cameraPrimeMissing++;
+        if (CameraStateHandler.hasReceivedCameraState()) {
+            long now = System.nanoTime();
+            if (this.lastCameraPrimeWarningNanos == 0 || now - this.lastCameraPrimeWarningNanos >= 5_000_000_000L) {
+                this.lastCameraPrimeWarningNanos = now;
+                Flashback.LOGGER.warn("Flashback export camera-state unavailable near tick {}; using nearest recorded sample ({} misses so far)", String.format("%.3f", absoluteReplayTick), this.cameraPrimeMissing);
+            }
+        } else {
+            this.cameraPrimeNoStream++;
         }
     }
 
@@ -738,20 +861,27 @@ public class ExportJob {
         }
     }
 
-    private void submitDownloadedFrames(VideoWriter videoWriter, SaveableFramebufferQueue downloader, boolean drain) {
-        long start = System.currentTimeMillis();
+    private void submitDownloadedFrames(VideoWriter videoWriter, SaveableFramebufferQueue downloader, boolean drain, boolean showDrainProgress) {
         boolean firstDrainFrame = true;
         while (true) {
             if (drain) {
-                long time = System.currentTimeMillis() - start;
-                String progress = "Capturing " + downloader.pendingCount() + " output frames... " + time/1000 + "s";
-                finishFrameFinal(Minecraft.getInstance().gameRenderer.mainRenderTarget(), progress, firstDrainFrame);
+                if (downloader.isEmpty()) {
+                    break;
+                }
+                String progress = !showDrainProgress ? "Rendering" : downloader.pendingCount() == 1 ?
+                    "Downloading 1 pending frame" :
+                    "Downloading " + downloader.pendingCount() + " pending frames";
+                RenderTarget previewFramebuffer = this.lastExportPreviewFramebuffer != null ?
+                    this.lastExportPreviewFramebuffer :
+                    Minecraft.getInstance().gameRenderer.mainRenderTarget();
+                finishFrameFinal(previewFramebuffer, progress, showDrainProgress && firstDrainFrame);
                 firstDrainFrame = false;
             } else {
                 RenderSystem.executePendingTasks();
             }
 
-            if (this.settings.projection() == ExportProjection.CUBE_MAP || this.settings.projection() == ExportProjection.EQUIRECTANGULAR) {
+            ExportProjection projection = this.getEffectiveProjection();
+            if (projection == ExportProjection.CUBE_MAP || projection == ExportProjection.EQUIRECTANGULAR) {
                 var frames = downloader.finishDownloadMultiple(6);
 
                 if (frames == null) {
@@ -775,7 +905,7 @@ public class ExportJob {
                 ImageFrame target = new ImageFrame(resolutionX, resolutionY, frames[0].format, true);
                 target.audioBuffer = frames[0].audioBuffer;
 
-                if (this.settings.projection() == ExportProjection.CUBE_MAP) {
+                if (projection == ExportProjection.CUBE_MAP) {
                     for (int i = 0; i < frames.length; i++) {
                         int positionX;
                         int positionY;
@@ -860,6 +990,8 @@ public class ExportJob {
                     frame.close();
                 }
 
+                this.compositeUiOverlay(target, frames[0].replayTick);
+
                 if (this.firstFrame == null) {
                     this.firstFrame = target.toOpaqueRgbaU8NativeImage();
                 }
@@ -884,6 +1016,8 @@ public class ExportJob {
                     frame.makeOpaque();
                 }
 
+                this.compositeUiOverlay(frame, frame.replayTick);
+
                 if (this.firstFrame == null) {
                     this.firstFrame = frame.toOpaqueRgbaU8NativeImage();
                 }
@@ -896,42 +1030,131 @@ public class ExportJob {
         }
     }
 
+    private void compositeUiOverlay(ImageFrame frame, double replayTick) {
+        if (this.settings.noGui() || this.uiOverlayPlayback == null || frame.format != ImageFrame.Format.RGBA_U8) return;
+        try (NativeImage image = new NativeImage(NativeImage.Format.RGBA, frame.width, frame.height, false)) {
+            org.lwjgl.system.MemoryUtil.memCopy(frame.pixels, image.getPointer(), frame.size);
+            this.compositeUiOverlay(image, replayTick);
+            org.lwjgl.system.MemoryUtil.memCopy(image.getPointer(), frame.pixels, frame.size);
+        }
+    }
+
+    private void compositeUiOverlay(NativeImage image, double replayTick) {
+        if (this.settings.noGui() || this.uiOverlayPlayback == null ||
+            !IrisShaderCompatibility.shouldAllowRecordedUiOverlayExport("recorded UI overlay export composite")) {
+            return;
+        }
+
+        this.uiOverlayPlayback.composite(image, replayTick);
+    }
+
+    public boolean shouldSuppressLiveGuiForUiOverlay() {
+        return this.settings.noGui() || (this.uiOverlayPlayback != null &&
+            IrisShaderCompatibility.shouldAllowRecordedUiLiveGuiSuppression("recorded UI export live GUI suppression") &&
+            this.uiOverlayPlayback.hasVisibleRecordedScreenOverlay(this.settings.startTick() + this.currentTickDouble));
+    }
+
+    private boolean useSsaa() {
+        return this.settings.ssaa() && !this.conservativeShaderExport;
+    }
+
     private static ProjectionMatrixBuffer projectionBuffers = null;
     private static Projection projection;
 
     private static RenderTarget displayTarget = null;
 
+    private void initializeProgress(int totalFrames) {
+        this.progressFrame = 0;
+        this.progressTotalFrames = Math.max(0, totalFrames);
+        this.progressCount = 0;
+        this.progressOutOf = this.progressTotalFrames;
+        this.lastProgressSampleMillis = this.renderStartTime;
+        this.lastProgressSampleFrame = 0;
+        this.rollingMillisPerFrame = -1.0;
+        this.progressPhase = "Rendering";
+    }
+
+    private void updateProgress(int currentFrame, int totalFrames, String phase) {
+        int safeTotalFrames = Math.max(0, totalFrames);
+        int safeCurrentFrame = Math.max(0, Math.min(currentFrame, safeTotalFrames));
+
+        this.progressFrame = safeCurrentFrame;
+        this.progressTotalFrames = safeTotalFrames;
+        this.progressCount = safeCurrentFrame;
+        this.progressOutOf = safeTotalFrames;
+        this.progressPhase = phase;
+
+        long now = System.currentTimeMillis();
+        if (this.lastProgressSampleMillis < 0) {
+            this.lastProgressSampleMillis = now;
+            this.lastProgressSampleFrame = safeCurrentFrame;
+            return;
+        }
+
+        int frameDelta = safeCurrentFrame - this.lastProgressSampleFrame;
+        long timeDelta = now - this.lastProgressSampleMillis;
+        if (frameDelta > 0 && timeDelta > 0) {
+            double sampleMillisPerFrame = timeDelta / (double) frameDelta;
+            if (this.rollingMillisPerFrame <= 0.0) {
+                this.rollingMillisPerFrame = sampleMillisPerFrame;
+            } else {
+                this.rollingMillisPerFrame = this.rollingMillisPerFrame * 0.85 + sampleMillisPerFrame * 0.15;
+            }
+            this.lastProgressSampleMillis = now;
+            this.lastProgressSampleFrame = safeCurrentFrame;
+        }
+    }
+
+    private List<String> createProgressLines(String phase) {
+        List<String> lines = new ArrayList<>();
+        int totalFrames = Math.max(0, this.progressTotalFrames);
+        int currentFrame = Math.max(0, Math.min(this.progressFrame, totalFrames));
+        int remainingFrames = Math.max(0, totalFrames - currentFrame);
+
+        lines.add("Frame: " + currentFrame + "/" + totalFrames);
+        lines.add("Frames Remaining: " + remainingFrames);
+        lines.add("Phase: " + phase);
+
+        long currentTime = System.currentTimeMillis();
+        long elapsed = Math.max(0, currentTime - this.renderStartTime);
+        lines.add("Elapsed: " + formatTime(elapsed));
+
+        long estimatedRemaining = this.estimateRemainingMillis(elapsed, currentFrame, remainingFrames);
+        lines.add("ETA: " + (estimatedRemaining >= 0 ? formatTime(estimatedRemaining) : "~"));
+
+        return lines;
+    }
+
+    private long estimateRemainingMillis(long elapsed, int currentFrame, int remainingFrames) {
+        if (remainingFrames <= 0) {
+            return 0;
+        }
+
+        if (this.rollingMillisPerFrame > 0.0) {
+            return Math.max(0L, Math.round(this.rollingMillisPerFrame * remainingFrames));
+        }
+
+        if (currentFrame > 0 && elapsed > 0) {
+            return Math.max(0L, elapsed * remainingFrames / currentFrame);
+        }
+
+        return -1L;
+    }
+
     private boolean finishFrameNormal(RenderTarget framebuffer, int currentFrame, int totalFrames) {
-        this.progressCount = currentFrame;
-        this.progressOutOf = totalFrames;
+        this.updateProgress(currentFrame, totalFrames, "Rendering");
 
         if (currentFrame == totalFrames) {
-            this.finishFrameFinal(framebuffer, "Saving...", true);
+            this.finishFrameFinal(framebuffer, "Saving", true);
             return false;
         }
 
-        List<String> lines = new ArrayList<>();
-
-        lines.add("Exported Frames: " + currentFrame + "/" + totalFrames);
-
-        long currentTime = System.currentTimeMillis();
-        long elapsed = currentTime - this.renderStartTime;
-        lines.add("Time elapsed: " + formatTime(elapsed));
-
-        if (currentFrame >= this.settings.framerate()) {
-            long estimatedRemaining = (currentTime - this.renderStartTime) * (totalFrames - currentFrame) / currentFrame;
-            lines.add("Estimated time remaining: " + formatTime(estimatedRemaining));
-        } else {
-            lines.add("Estimated time remaining: ~");
-        }
-
-        return this.finishFrame(framebuffer, lines, false, true);
+        return this.finishFrame(framebuffer, this.createProgressLines("Rendering"), false, true);
     }
 
     private void finishFrameFinal(RenderTarget framebuffer, String customProgress, boolean forceShow) {
-        List<String> lines = new ArrayList<>();
-        lines.add(customProgress);
-        this.finishFrame(framebuffer, lines, forceShow, false);
+        this.updateProgress(this.progressFrame, this.progressTotalFrames, customProgress);
+        this.finishFrame(framebuffer, this.createProgressLines(customProgress), forceShow, false);
     }
 
     private static void finishHiddenFrame() {
